@@ -455,7 +455,7 @@ async function migrateModelsV2(db: PgDatabase) {
  * SWE-bench Verified, Terminal-Bench 2, TAU-Bench, Aider Polyglot.
  * Higher rank = weaker. Ties are allowed (same weights across providers).
  */
-function migrateModelsV3Ranks(db: PgDatabase) {
+async function migrateModelsV3Ranks(db: PgDatabase) {
   const setRank = db.prepare(`UPDATE models SET intelligence_rank = ? WHERE platform = ? AND model_id = ?`);
   const ranks: Array<[number, string, string]> = [
     // #1-10 frontier coders / agents
@@ -784,7 +784,7 @@ async function migrateModelsV6(db: PgDatabase) {
  *   api.z.ai and open.bigmodel.cn keys.
  * HF and NVIDIA left as-is: HF still serves chat with current key; NVIDIA already disabled.
  */
-function migrateModelsV7(db: PgDatabase) {
+async function migrateModelsV7(db: PgDatabase) {
   const deleteModel = db.prepare(`DELETE FROM models WHERE platform = ? AND model_id = ?`);
   const deleteFallback = db.prepare(`
     DELETE FROM fallback_config WHERE model_db_id IN (
@@ -843,7 +843,7 @@ function migrateModelsV7(db: PgDatabase) {
  * "Couldn't find valid service tier", so the 200s on these rows confirm free-tier
  * access. Cloudflare's @cf/* models share the 10K Neurons/day free pool.
  */
-function migrateModelsV8(db: PgDatabase) {
+async function migrateModelsV8(db: PgDatabase) {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -900,7 +900,7 @@ async function migrateModelsV9(db: PgDatabase) {
  * Quota shape: GPU-time, not tokens. monthly_token_budget reflects rough
  * Free-tier "session" capacity rather than a hard token cap.
  */
-function migrateModelsV10(db: PgDatabase) {
+async function migrateModelsV10(db: PgDatabase) {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1415,7 +1415,7 @@ async function migrateModelsV16Vision(db: PgDatabase) {
 // Baidu CoBuddy, Groq Compound, GLM-4.6V Flash, GLM-4.5 Flash, Mistral Small 4,
 // Devstral). intelligence_rank (the within-tier tiebreak, low impact) is left
 // untouched. Idempotent — every statement is an absolute SET, safe to re-run.
-function migrateModelsV17IntelligenceTiers(db: PgDatabase) {
+async function migrateModelsV17IntelligenceTiers(db: PgDatabase) {
   const apply = db.transaction(async () => {
     // Frontier (AA ≥ 45): genuine frontier-class. Promotes Gemini 3.5 Flash (55)
     // and Gemini 3 Flash Preview (46) up from Large.
@@ -1519,7 +1519,7 @@ function migrateModelsV17IntelligenceTiers(db: PgDatabase) {
 // models (NVIDIA logs Nemotron traffic). Conservative shared 20 RPM / 200 RPD,
 // matching the OpenRouter :free pool pattern. Idempotent (INSERT OR IGNORE +
 // fallback_config backfill), safe to re-run.
-function migrateModelsV18OpenCodeZen(db: PgDatabase) {
+async function migrateModelsV18OpenCodeZen(db: PgDatabase) {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1556,7 +1556,7 @@ function migrateModelsV18OpenCodeZen(db: PgDatabase) {
  * Dec 2025, so rpd/tpm are conservative. Idempotent (INSERT OR IGNORE + fallback
  * backfill), safe to re-run.
  */
-function migrateModelsV19Gemma4(db: PgDatabase) {
+async function migrateModelsV19Gemma4(db: PgDatabase) {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1585,7 +1585,7 @@ function migrateModelsV19Gemma4(db: PgDatabase) {
  * 'kilo' api_keys sentinel row, added via the keyless Keys-page flow. Idempotent
  * (INSERT OR IGNORE + fallback backfill), safe to re-run.
  */
-function migrateModelsV20KiloFree(db: PgDatabase) {
+async function migrateModelsV20KiloFree(db: PgDatabase) {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1622,7 +1622,7 @@ function migrateModelsV20KiloFree(db: PgDatabase) {
  * These ids are re-inserted by their original migrations on each boot, so this
  * later DELETE is what keeps them out. Idempotent, safe to re-run.
  */
-function migrateModelsV21PruneDead(db: PgDatabase) {
+async function migrateModelsV21PruneDead(db: PgDatabase) {
   const dead: Array<[string, string]> = [
     ['llm7', 'gpt-oss-20b'],
     ['llm7', 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo'],
