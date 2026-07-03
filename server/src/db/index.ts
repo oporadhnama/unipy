@@ -495,7 +495,7 @@ function migrateModelsV3Ranks(db: PgDatabase) {
       (await setRank.run(rank, platform, modelId));
     }
   });
-  apply();
+  await apply();
 }
 
 /**
@@ -605,7 +605,7 @@ async function migrateModelsV4(db: PgDatabase) {
       for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
-  apply();
+  await apply();
 
   // 5) Re-rank the live catalog by agentic tool-use capability (lower = smarter).
   //    Grounded in April 2026 SWE-Bench Verified + BFCL v3 + Tau-Bench numbers.
@@ -685,7 +685,7 @@ async function migrateModelsV5(db: PgDatabase) {
       for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
-  apply();
+  await apply();
 }
 
 /**
@@ -772,7 +772,7 @@ async function migrateModelsV6(db: PgDatabase) {
       for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
-  apply();
+  await apply();
 }
 
 /**
@@ -833,7 +833,7 @@ function migrateModelsV7(db: PgDatabase) {
       for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
-  apply();
+  await apply();
 }
 
 /**
@@ -869,7 +869,7 @@ function migrateModelsV8(db: PgDatabase) {
       for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
-  apply();
+  await apply();
 }
 
 /**
@@ -934,7 +934,7 @@ function migrateModelsV10(db: PgDatabase) {
       for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
-  apply();
+  await apply();
 }
 
 /**
@@ -1035,7 +1035,7 @@ async function migrateModelsV11(db: PgDatabase) {
       for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
-  apply();
+  await apply();
 }
 
 /**
@@ -1124,7 +1124,7 @@ async function migrateModelsV12(db: PgDatabase) {
       for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
-  apply();
+  await apply();
 }
 
 /**
@@ -1311,7 +1311,7 @@ async function migrateModelsV13(db: PgDatabase) {
       for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
-  apply();
+  await apply();
 }
 
 /**
@@ -1394,7 +1394,7 @@ async function migrateModelsV16Vision(db: PgDatabase) {
         AND (model_id LIKE '%gpt-4o%' OR model_id LIKE '%gpt-4.1%' OR model_id LIKE '%gpt-5%')
     `).run();
   });
-  apply();
+  await apply();
 }
 
 // ── V17: intelligence tier audit (2026-06) ──
@@ -1498,7 +1498,7 @@ function migrateModelsV17IntelligenceTiers(db: PgDatabase) {
         OR LOWER(model_id) LIKE '%lfm-2.5-1.2b%'
     `).run();
   });
-  apply();
+  await apply();
 }
 
 // ── V18: OpenCode Zen provider (2026-06) ──
@@ -1544,7 +1544,7 @@ function migrateModelsV18OpenCodeZen(db: PgDatabase) {
       for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
-  apply();
+  await apply();
 }
 
 /**
@@ -1570,7 +1570,7 @@ function migrateModelsV19Gemma4(db: PgDatabase) {
     for (const a of additions) (await insert.run(...a));
     (await backfillFallback(db));
   });
-  apply();
+  await apply();
 }
 
 /**
@@ -1601,7 +1601,7 @@ function migrateModelsV20KiloFree(db: PgDatabase) {
     for (const a of additions) (await insert.run(...a));
     (await backfillFallback(db));
   });
-  apply();
+  await apply();
 }
 
 /**
@@ -1649,7 +1649,7 @@ function migrateModelsV21PruneDead(db: PgDatabase) {
        WHERE model_db_id = (SELECT id FROM models WHERE platform = 'cerebras' AND model_id = 'zai-glm-4.7')
     `).run();
   });
-  apply();
+  await apply();
 }
 
 // ── V22: tools-aware routing (2026-06-04) ──
@@ -1714,7 +1714,7 @@ async function migrateModelsV22Tools(db: PgDatabase) {
       )
     `).run();
   });
-  apply();
+  await apply();
 }
 
 // Embeddings V1 (2026-06): per-family embedding catalog. A "family" is one
