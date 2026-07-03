@@ -114,7 +114,7 @@ async function createTables(db: PgDatabase) {
       key_id INTEGER NOT NULL,
       kind TEXT NOT NULL CHECK (kind IN ('request', 'tokens')),
       tokens INTEGER NOT NULL DEFAULT 0,
-      created_at_ms INTEGER NOT NULL,
+      created_at_ms BIGINT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -122,7 +122,7 @@ async function createTables(db: PgDatabase) {
       platform TEXT NOT NULL,
       model_id TEXT NOT NULL,
       key_id INTEGER NOT NULL,
-      expires_at_ms INTEGER NOT NULL,
+      expires_at_ms BIGINT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (platform, model_id, key_id)
     );
@@ -151,7 +151,7 @@ async function createTables(db: PgDatabase) {
     CREATE TABLE IF NOT EXISTS sessions (
       token_hash TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      expires_at_ms INTEGER NOT NULL,
+      expires_at_ms BIGINT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
@@ -162,6 +162,16 @@ async function createTables(db: PgDatabase) {
     CREATE INDEX IF NOT EXISTS idx_rate_limit_cooldowns_expires ON rate_limit_cooldowns(expires_at_ms);
     CREATE INDEX IF NOT EXISTS idx_api_keys_platform ON api_keys(platform);
   `);
+
+  try {
+    await db.exec(`
+      ALTER TABLE rate_limit_usage ALTER COLUMN created_at_ms TYPE BIGINT;
+      ALTER TABLE rate_limit_cooldowns ALTER COLUMN expires_at_ms TYPE BIGINT;
+      ALTER TABLE sessions ALTER COLUMN expires_at_ms TYPE BIGINT;
+    `);
+  } catch (e) {
+    // Ignore errors on fresh DBs where this isn't needed or sqlite contexts
+  }
 
   (await ensureRequestKeyIdColumn(db));
   (await ensureApiKeysBaseUrlColumn(db));
