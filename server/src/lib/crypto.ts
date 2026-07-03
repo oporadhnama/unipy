@@ -61,7 +61,7 @@ export async function initEncryptionKey(db: Database): Promise<void> {
   }
 
   // 2. Check DB for persisted key
-  const row = await db.prepare("SELECT value FROM settings WHERE key = 'encryption_key'").get() as { value: string } | undefined;
+  const row = await db.prepare("SELECT value FROM app_settings WHERE key = 'encryption_key'").get() as { value: string } | undefined;
   if (row) {
     cachedKey = parseHexKey(row.value, 'db');
     console.warn('[crypto] No ENCRYPTION_KEY set — using auto-generated key from the local DB (dev only).');
@@ -70,7 +70,7 @@ export async function initEncryptionKey(db: Database): Promise<void> {
 
   // 3. Generate and persist
   cachedKey = crypto.randomBytes(KEY_BYTES);
-  await db.prepare("INSERT INTO settings (key, value) VALUES ('encryption_key', ?)").run(cachedKey.toString('hex'));
+  await db.prepare("INSERT INTO app_settings (key, value) VALUES ('encryption_key', ?)").run(cachedKey.toString('hex'));
   console.warn('[crypto] No ENCRYPTION_KEY set — generated and persisted a local dev key. Set ENCRYPTION_KEY for production.');
 }
 

@@ -135,7 +135,7 @@ async function createTables(db: PgDatabase) {
       UNIQUE(model_db_id)
     );
 
-    CREATE TABLE IF NOT EXISTS settings (
+    CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
@@ -1803,28 +1803,28 @@ async function ensureUnifiedKey(db: PgDatabase) {
 
 export async function getUnifiedApiKey(): Promise<string> {
   const db = getDb();
-  const row = await db.prepare("SELECT value FROM settings WHERE key = 'unified_api_key'").get() as { value: string };
+  const row = await db.prepare("SELECT value FROM app_settings WHERE key = 'unified_api_key'").get() as { value: string };
   return row.value;
 }
 
 export async function regenerateUnifiedKey(): Promise<string> {
   const db = getDb();
   const key = `freellmapi-${crypto.randomBytes(24).toString('hex')}`;
-  await db.prepare("UPDATE settings SET value = ? WHERE key = 'unified_api_key'").run(key);
+  await db.prepare("UPDATE app_settings SET value = ? WHERE key = 'unified_api_key'").run(key);
   return key;
 }
 
 // Generic key/value settings accessors (used by routing strategy, etc.).
 export async function getSetting(key: string): Promise<string | undefined> {
   const db = getDb();
-  const row = await db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+  const row = await db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key) as { value: string } | undefined;
   return row?.value;
 }
 
 export async function setSetting(key: string, value: string): Promise<void> {
   const db = getDb();
   await db.prepare(`
-    INSERT INTO settings (key, value) VALUES (?, ?)
+    INSERT INTO app_settings (key, value) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(key, value);
 }
