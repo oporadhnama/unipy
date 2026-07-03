@@ -370,7 +370,7 @@ async function migrateModels(db: PgDatabase) {
       }
     }
   });
-  apply();
+  await apply();
 }
 
 /**
@@ -404,7 +404,7 @@ async function migrateModelsV2(db: PgDatabase) {
       (await deleteModel.run(p, m));
     }
   });
-  applyRemovals();
+  await applyRemovals();
 
   // GitHub: gpt-5 is in the model catalog but returns "unavailable_model" on free tier
   // inference. Revert to gpt-4o which works. This only runs if the gpt-5 row exists.
@@ -447,7 +447,7 @@ async function migrateModelsV2(db: PgDatabase) {
       for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
-  applyAdditions();
+  await applyAdditions();
 }
 
 /**

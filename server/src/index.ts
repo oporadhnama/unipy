@@ -10,7 +10,7 @@ const PORT = process.env.PORT ?? 3001;
 const HOST = process.env.HOST ?? '::';
 
 async function main() {
-  initDb();
+  await initDb();
   const app = await createApp();
 
   const onReady = (host: string) => () => {

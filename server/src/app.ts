@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { keysRouter } from './routes/keys.js';
 import { modelsRouter } from './routes/models.js';
@@ -98,7 +99,12 @@ export async function createApp() {
       next();
       return;
     }
-    res.sendFile(path.join(clientDist, 'index.html'));
+    const indexPath = path.join(clientDist, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      res.status(200).send('freellmapi server is running. Dashboard is hosted separately.');
+    }
   });
 
   return app;
