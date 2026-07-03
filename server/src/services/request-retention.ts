@@ -34,11 +34,11 @@ export function getRequestAnalyticsRetentionConfig(): RequestAnalyticsRetentionC
   };
 }
 
-export function pruneRequestAnalytics(options: {
+export async function pruneRequestAnalytics(options: {
   db?: RetentionDb;
   force?: boolean;
   now?: Date;
-} = {}): { deleted: number; skipped: boolean } {
+} = {}): Promise<{ deleted: number; skipped: boolean }> {
   const now = options.now ?? new Date();
   const nowMs = now.getTime();
 
@@ -53,11 +53,11 @@ export function pruneRequestAnalytics(options: {
 
   if (retentionDays > 0) {
     const cutoff = toSqliteTimestamp(new Date(nowMs - retentionDays * DAY_MS));
-    deleted += db.prepare('DELETE FROM requests WHERE created_at < ?').run(cutoff).changes;
+    deleted += (await db.prepare('DELETE FROM requests WHERE created_at < ?').run(cutoff)).changes;
   }
 
   if (maxRows > 0) {
-    deleted += db.prepare(`
+    deleted += (await db.prepare(`
       DELETE FROM requests
       WHERE id IN (
         SELECT id
@@ -65,7 +65,7 @@ export function pruneRequestAnalytics(options: {
         ORDER BY created_at DESC, id DESC
         LIMIT -1 OFFSET ?
       )
-    `).run(maxRows).changes;
+    `).run(maxRows)).changes;
   }
 
   return { deleted, skipped: false };

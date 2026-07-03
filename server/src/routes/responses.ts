@@ -264,7 +264,7 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
 
   // Same unified-key auth as the proxy (accepts Bearer or x-api-key).
   const token = extractApiToken(req);
-  const unifiedKey = getUnifiedApiKey();
+  const unifiedKey = (await getUnifiedApiKey());
   if (!token || !timingSafeStringEqual(token, unifiedKey)) {
     res.status(401).json({ error: { message: 'Invalid API key', type: 'authentication_error' } });
     return;
@@ -320,7 +320,7 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
   // Optional client-managed session affinity (mirrors /chat/completions).
   const rawSessionId = req.headers['x-session-id'];
   const sessionIdHeader = Array.isArray(rawSessionId) ? rawSessionId[0] : rawSessionId;
-  const preferredModel = getStickyModel(messages, sessionIdHeader);
+  const preferredModel = (await getStickyModel(messages, sessionIdHeader));
 
   // Tool-bearing requests (the normal case for Codex/agent clients on this
   // endpoint) must stay on models that emit structured tool_calls — a model
@@ -353,7 +353,7 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
-      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, false, wantsTools);
+      route = await routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, false, wantsTools);
     } catch (err: any) {
       const status = lastError ? 429 : (err.status ?? 503);
       const message = lastError
@@ -369,7 +369,7 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
       return;
     }
 
-    recordRequest(route.platform, route.modelId, route.keyId);
+    (await recordRequest(route.platform, route.modelId, route.keyId));
 
     try {
       if (stream) {
@@ -473,7 +473,7 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
           // Tool-call deltas → function_call item + argument deltas.
           for (const tc of delta.tool_calls ?? []) {
             const idx = (tc as any).index ?? 0;
-            let acc = toolAcc.get(idx);
+            let acc = (await toolAcc.get(idx));
             if (!acc) {
               // First time we see this tool call: open a new output item.
               if (msgItemId !== null && msgText.length > 0) {
@@ -505,13 +505,13 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
         // over on the same SSE stream (only the skeleton events are out).
         if (heldText.length > 0) {
           const rescue = (dialectMode === 'dialect' || containsDialectMarker(heldText))
-            ? rescueInlineToolCalls(heldText, new Set((tools ?? []).map(t => t.function.name)))
+            ? (await rescueInlineToolCalls(heldText, new Set((tools ?? []).map(t => t.function.name))))
             : { detected: false as const, calls: null, cleanText: heldText };
           if (rescue.detected && !rescue.calls) {
-            logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, Date.now() - start, `unparseable inline tool-call dialect: ${heldText.slice(0, 120)}`);
+            (await logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, Date.now() - start, `unparseable inline tool-call dialect: ${heldText.slice(0, 120)}`));
             skipKeys.add(`${route.platform}:${route.modelId}:${route.keyId}`);
-            setCooldown(route.platform, route.modelId, route.keyId, getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }));
-            recordRateLimitHit(route.modelDbId);
+            (await setCooldown(route.platform, route.modelId, route.keyId, (await getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }))));
+            (await recordRateLimitHit(route.modelDbId));
             lastError = new Error(`unparseable inline tool-call dialect from ${route.displayName}`);
             continue;
           }
@@ -549,10 +549,10 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
         // skeletons are out), so it's safe to fail over to the next model on
         // the same SSE stream.
         if (msgText.length === 0 && toolAcc.size === 0) {
-          logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, Date.now() - start, 'empty completion (no content, no tool_calls)');
+          (await logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, Date.now() - start, 'empty completion (no content, no tool_calls)'));
           skipKeys.add(`${route.platform}:${route.modelId}:${route.keyId}`);
-          setCooldown(route.platform, route.modelId, route.keyId, getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }));
-          recordRateLimitHit(route.modelDbId);
+          (await setCooldown(route.platform, route.modelId, route.keyId, (await getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }))));
+          (await recordRateLimitHit(route.modelDbId));
           lastError = new Error(`empty completion from ${route.displayName}`);
           continue;
         }
@@ -571,7 +571,7 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
         // arguments, so repairing here covers the streamed path too.
         const finalToolCalls: ChatToolCall[] = [];
         for (const acc of toolAcc.values()) {
-          const repairedArgs = repairToolArguments(acc.args, toolSchemas.get(acc.name));
+          const repairedArgs = repairToolArguments(acc.args, (await toolSchemas.get(acc.name)));
           sse('response.function_call_arguments.done', { item_id: acc.itemId, output_index: acc.outputIndex, arguments: repairedArgs });
           sse('response.output_item.done', { output_index: acc.outputIndex, item: { id: acc.itemId, type: 'function_call', status: 'completed', call_id: acc.callId, name: acc.name, arguments: repairedArgs } });
           finalToolCalls.push({ id: acc.callId, type: 'function', function: { name: acc.name, arguments: repairedArgs } });
@@ -584,34 +584,34 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
         sse('response.completed', { response: finalResponse });
         res.end();
 
-        recordTokens(route.platform, route.modelId, route.keyId, estimatedInputTokens + totalOutputTokens);
-        recordSuccess(route.modelDbId);
+        (await recordTokens(route.platform, route.modelId, route.keyId, estimatedInputTokens + totalOutputTokens));
+        (await recordSuccess(route.modelDbId));
         setStickyModel(messages, route.modelDbId, sessionIdHeader);
-        logRequest(route.platform, route.modelId, route.keyId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, null);
+        (await logRequest(route.platform, route.modelId, route.keyId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, null));
         return;
       } else {
         const result = await route.provider.chatCompletion(route.apiKey, messages, route.modelId, completionOpts);
 
         const msg = result.choices[0]?.message;
         let text = contentToString(msg?.content ?? '');
-        let toolCalls = (msg?.tool_calls ?? []).map((tc) => ({
-          ...tc,
-          function: { ...tc.function, arguments: repairToolArguments(tc.function.arguments, toolSchemas.get(tc.function.name)) },
-        }));
+        let toolCalls = await Promise.all((msg?.tool_calls ?? []).map(async (tc) => ({
+                  ...tc,
+                  function: { ...tc.function, arguments: repairToolArguments(tc.function.arguments, (await toolSchemas.get(tc.function.name))) },
+                })));
 
         // Inline tool-call dialect rescue (#231) — see /chat/completions.
         if (wantsTools && toolCalls.length === 0 && text) {
-          const rescue = rescueInlineToolCalls(text, new Set((tools ?? []).map(t => t.function.name)));
+          const rescue = (await rescueInlineToolCalls(text, new Set((tools ?? []).map(t => t.function.name))));
           if (rescue.detected) {
             if (!rescue.calls) {
               throw new Error(`unparseable inline tool-call dialect from ${route.displayName}: ${text.slice(0, 120)}`);
             }
             console.log(`[Responses] Rescued ${rescue.calls.length} inline tool call(s) from ${route.displayName}`);
-            toolCalls = rescue.calls.map((c, i) => ({
-              id: `call_rescued_${i + 1}`,
-              type: 'function' as const,
-              function: { name: c.name, arguments: repairToolArguments(c.arguments, toolSchemas.get(c.name)) },
-            }));
+            toolCalls = await Promise.all(rescue.calls.map(async (c, i) => ({
+                          id: `call_rescued_${i + 1}`,
+                          type: 'function' as const,
+                          function: { name: c.name, arguments: repairToolArguments(c.arguments, (await toolSchemas.get(c.name))) },
+                        })));
             text = rescue.cleanText;
           }
         }
@@ -620,16 +620,16 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
 
         // Empty completion → fail over (see the streaming-path comment above).
         if (!text && toolCalls.length === 0) {
-          logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, Date.now() - start, 'empty completion (no content, no tool_calls)');
+          (await logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, Date.now() - start, 'empty completion (no content, no tool_calls)'));
           skipKeys.add(`${route.platform}:${route.modelId}:${route.keyId}`);
-          setCooldown(route.platform, route.modelId, route.keyId, getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }));
-          recordRateLimitHit(route.modelDbId);
+          (await setCooldown(route.platform, route.modelId, route.keyId, (await getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }))));
+          (await recordRateLimitHit(route.modelDbId));
           lastError = new Error(`empty completion from ${route.displayName}`);
           continue;
         }
 
-        recordTokens(route.platform, route.modelId, route.keyId, result.usage?.total_tokens ?? 0);
-        recordSuccess(route.modelDbId);
+        (await recordTokens(route.platform, route.modelId, route.keyId, result.usage?.total_tokens ?? 0));
+        (await recordSuccess(route.modelDbId));
         setStickyModel(messages, route.modelDbId, sessionIdHeader);
 
         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
@@ -639,13 +639,13 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
           promptTokens, completionTokens,
         }));
 
-        logRequest(route.platform, route.modelId, route.keyId, 'success',
-          promptTokens, completionTokens, Date.now() - start, null);
+        (await logRequest(route.platform, route.modelId, route.keyId, 'success',
+                    promptTokens, completionTokens, Date.now() - start, null));
         return;
       }
     } catch (err: any) {
       const latency = Date.now() - start;
-      logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, latency, err.message);
+      (await logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, latency, err.message));
 
       // Mid-stream failures can't be retried (bytes already sent) — close cleanly.
       if (stream && streamStarted) {
@@ -656,10 +656,10 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
 
       if (isRetryableError(err)) {
         skipKeys.add(`${route.platform}:${route.modelId}:${route.keyId}`);
-        setCooldown(route.platform, route.modelId, route.keyId, isPaymentRequiredError(err)
-          ? PAYMENT_REQUIRED_COOLDOWN_MS
-          : getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }));
-        recordRateLimitHit(route.modelDbId);
+        (await setCooldown(route.platform, route.modelId, route.keyId, isPaymentRequiredError(err)
+                    ? PAYMENT_REQUIRED_COOLDOWN_MS
+                    : (await getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }))));
+        (await recordRateLimitHit(route.modelDbId));
         lastError = err;
         continue;
       }

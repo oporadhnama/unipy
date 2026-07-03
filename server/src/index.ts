@@ -11,7 +11,7 @@ const HOST = process.env.HOST ?? '::';
 
 async function main() {
   initDb();
-  const app = createApp();
+  const app = await createApp();
 
   const onReady = (host: string) => () => {
     const display = host.includes(':') ? `[${host}]` : host;
@@ -36,11 +36,11 @@ async function main() {
   });
 }
 
-main().catch((err) => {
-  // A boot failure (e.g. a missing production ENCRYPTION_KEY) must exit
-  // non-zero rather than leaving a half-initialized process that never starts
-  // listening — that silent state is what surfaces in the client as
-  // "Can't reach the server".
-  console.error('\n[server] Failed to start:\n  ' + (err?.message ?? err) + '\n');
-  process.exit(1);
-});
+(async () => {
+  try {
+    await main();
+  } catch (err: any) {
+    console.error('\n[server] Failed to start:\n  ' + (err?.message ?? err) + '\n');
+    process.exit(1);
+  }
+})();

@@ -35,7 +35,7 @@ export function createProxyRateLimiter() {
   const limit = parseLimit();
   const windows = new Map<string, WindowState>();
 
-  return function proxyRateLimit(req: Request, res: Response, next: NextFunction): void {
+  return async function proxyRateLimit(req: Request, res: Response, next: NextFunction): Promise<void> {
     if (limit === 0) {
       next();
       return;
@@ -44,7 +44,7 @@ export function createProxyRateLimiter() {
     const now = Date.now();
     const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
 
-    let state = windows.get(ip);
+    let state = (await windows.get(ip));
     if (!state || now >= state.resetAt) {
       state = { count: 0, resetAt: now + WINDOW_MS };
       windows.set(ip, state);

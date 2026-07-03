@@ -126,7 +126,7 @@ export class OpenAICompatProvider extends BaseProvider {
       throw new Error(`${this.name} API error ${res.status}: ${(err as any).error?.message ?? res.statusText}`);
     }
 
-    yield* this.readSseStream(res);
+    yield* (await this.readSseStream(res));
   }
 
   async validateKey(apiKey: string): Promise<boolean> {

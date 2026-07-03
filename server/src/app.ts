@@ -34,7 +34,7 @@ function getAllowedCorsOrigins() {
   return new Set([...DEFAULT_DASHBOARD_ORIGINS, ...configuredOrigins]);
 }
 
-export function createApp() {
+export async function createApp() {
   const app = express();
   const allowedCorsOrigins = getAllowedCorsOrigins();
 
@@ -78,9 +78,9 @@ export function createApp() {
   app.use('/v1', responsesRouter);
 
   // Health check
-  app.get('/api/ping', (_req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
-  });
+  (await app.get('/api/ping', (_req, res) => {
+        res.json({ status: 'ok', timestamp: new Date().toISOString() });
+      }));
 
   // Error handler (for API routes)
   app.use(errorHandler);

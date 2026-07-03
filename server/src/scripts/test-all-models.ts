@@ -6,7 +6,7 @@ import { initDb, getDb } from '../db/index.js';
 import { decrypt } from '../lib/crypto.js';
 import { getProvider } from '../providers/index.js';
 
-initDb();
+(await initDb());
 const db = getDb();
 
 interface Row {
@@ -21,7 +21,7 @@ interface Key {
   auth_tag: string;
 }
 
-const models = db.prepare(`
+const models = await db.prepare(`
   SELECT m.id, m.platform, m.model_id, m.display_name
     FROM models m
    WHERE m.enabled = 1
@@ -37,10 +37,10 @@ const keyStmt = db.prepare(`
 const results: { row: Row; ok: boolean; ms: number; error?: string; reply?: string }[] = [];
 
 for (const row of models) {
-  const keyRow = keyStmt.get(row.platform) as Key | undefined;
+  const keyRow = (await keyStmt.get(row.platform)) as Key | undefined;
   if (!keyRow) { results.push({ row, ok: false, ms: 0, error: 'no key' }); continue; }
   const apiKey = decrypt(keyRow.encrypted_key, keyRow.iv, keyRow.auth_tag);
-  const provider = getProvider(row.platform as any);
+  const provider = (await getProvider(row.platform as any));
   if (!provider) { results.push({ row, ok: false, ms: 0, error: 'no provider' }); continue; }
 
   const start = Date.now();

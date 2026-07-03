@@ -9,7 +9,6 @@ import {
 } from './scoring.js';
 import { parseBudget } from '../lib/budget.js';
 import type { BaseProvider } from '../providers/base.js';
-import type { Database } from 'better-sqlite3';
 
 interface KeyRow {
   id: number;
@@ -75,8 +74,8 @@ const DECAY_AMOUNT = 1;            // remove this much penalty per decay interva
 /**
  * Record a 429 for a model — increases its penalty so it sinks in priority.
  */
-export function recordRateLimitHit(modelDbId: number) {
-  const existing = rateLimitPenalties.get(modelDbId);
+export async function recordRateLimitHit(modelDbId: number) {
+  const existing = (await rateLimitPenalties.get(modelDbId));
   const now = Date.now();
   if (existing) {
     existing.count++;
@@ -90,8 +89,8 @@ export function recordRateLimitHit(modelDbId: number) {
 /**
  * Record a success for a model — reduces its penalty so it rises back up.
  */
-export function recordSuccess(modelDbId: number) {
-  const existing = rateLimitPenalties.get(modelDbId);
+export async function recordSuccess(modelDbId: number) {
+  const existing = (await rateLimitPenalties.get(modelDbId));
   if (existing) {
     existing.penalty = Math.max(0, existing.penalty - 1);
     if (existing.penalty === 0) {
@@ -103,8 +102,8 @@ export function recordSuccess(modelDbId: number) {
 /**
  * Get the current penalty for a model (with time-based decay).
  */
-function getPenalty(modelDbId: number): number {
-  const entry = rateLimitPenalties.get(modelDbId);
+async function getPenalty(modelDbId: number): Promise<number> {
+  const entry = (await rateLimitPenalties.get(modelDbId));
   if (!entry) return 0;
 
   // Apply time-based decay
@@ -126,10 +125,10 @@ function getPenalty(modelDbId: number): number {
 /**
  * Get current penalties for all models (for the API/dashboard).
  */
-export function getAllPenalties(): Array<{ modelDbId: number; count: number; penalty: number }> {
+export async function getAllPenalties(): Promise<Array<{ modelDbId: number; count: number; penalty: number }>> {
   const result: Array<{ modelDbId: number; count: number; penalty: number }> = [];
   for (const [modelDbId, entry] of rateLimitPenalties) {
-    const penalty = getPenalty(modelDbId);
+    const penalty = await getPenalty(modelDbId);
     if (penalty > 0) {
       result.push({ modelDbId, count: entry.count, penalty });
     }
@@ -142,18 +141,18 @@ const STRATEGY_KEY = 'routing_strategy';
 const CUSTOM_WEIGHTS_KEY = 'routing_custom_weights';
 const VALID_STRATEGIES: RoutingStrategy[] = ['priority', 'balanced', 'smartest', 'fastest', 'reliable', 'custom'];
 
-export function getRoutingStrategy(): RoutingStrategy {
-  const raw = getSetting(STRATEGY_KEY);
+export async function getRoutingStrategy(): Promise<RoutingStrategy> {
+  const raw = (await getSetting(STRATEGY_KEY));
   return (raw && VALID_STRATEGIES.includes(raw as RoutingStrategy))
     ? (raw as RoutingStrategy)
     : DEFAULT_STRATEGY;
 }
 
-export function setRoutingStrategy(strategy: RoutingStrategy): void {
+export async function setRoutingStrategy(strategy: RoutingStrategy): Promise<void> {
   if (!VALID_STRATEGIES.includes(strategy)) {
     throw new Error(`Unknown routing strategy: ${strategy}`);
   }
-  setSetting(STRATEGY_KEY, strategy);
+  (await setSetting(STRATEGY_KEY, strategy));
 }
 
 // ── Custom weights (persisted) ──────────────────────────────────────────────
@@ -161,8 +160,8 @@ export function setRoutingStrategy(strategy: RoutingStrategy): void {
 // to 1) so the dashboard percentages read cleanly; combineScore would tolerate
 // any non-negative vector regardless. Falls back to the balanced preset until
 // the user has saved their own.
-export function getCustomWeights(): RoutingWeights {
-  const raw = getSetting(CUSTOM_WEIGHTS_KEY);
+export async function getCustomWeights(): Promise<RoutingWeights> {
+  const raw = (await getSetting(CUSTOM_WEIGHTS_KEY));
   if (raw) {
     try {
       const w = JSON.parse(raw) as RoutingWeights;
@@ -177,7 +176,7 @@ export function getCustomWeights(): RoutingWeights {
   return { ...BANDIT_PRESETS.balanced };
 }
 
-export function setCustomWeights(weights: RoutingWeights): void {
+export async function setCustomWeights(weights: RoutingWeights): Promise<void> {
   const { reliability, speed, intelligence } = weights;
   if (![reliability, speed, intelligence].every(v => Number.isFinite(v) && v >= 0)) {
     throw new Error('Custom weights must be non-negative numbers');
@@ -186,16 +185,16 @@ export function setCustomWeights(weights: RoutingWeights): void {
   if (sum <= 0) {
     throw new Error('Custom weights must not all be zero');
   }
-  setSetting(CUSTOM_WEIGHTS_KEY, JSON.stringify({
-    reliability: reliability / sum,
-    speed: speed / sum,
-    intelligence: intelligence / sum,
-  }));
+  (await setSetting(CUSTOM_WEIGHTS_KEY, JSON.stringify({
+        reliability: reliability / sum,
+        speed: speed / sum,
+        intelligence: intelligence / sum,
+      })));
 }
 
-function weightsFor(strategy: RoutingStrategy): RoutingWeights | null {
+async function weightsFor(strategy: RoutingStrategy): Promise<RoutingWeights | null> {
   if (strategy === 'priority') return null;
-  if (strategy === 'custom') return getCustomWeights();
+  if (strategy === 'custom') return await getCustomWeights();
   return BANDIT_PRESETS[strategy];
 }
 
@@ -224,11 +223,11 @@ function decayWeight(ageDays: number): number {
   return Math.pow(0.5, Math.max(0, ageDays) / HALF_LIFE_DAYS);
 }
 
-export function refreshStatsCache(db: Database, force = false): void {
+export async function refreshStatsCache(db: any, force = false): Promise<void> {
   if (!force && statsCache && Date.now() - statsCacheTime < CACHE_TTL_MS) return;
 
   const since = new Date(Date.now() - WINDOW_MS).toISOString();
-  const buckets = db.prepare(`
+  const buckets = (await db.prepare(`
     SELECT platform, model_id,
       CAST((julianday('now') - julianday(created_at)) AS INTEGER) AS age_days,
       COUNT(*) AS total,
@@ -240,7 +239,7 @@ export function refreshStatsCache(db: Database, force = false): void {
     FROM requests
     WHERE created_at >= ?
     GROUP BY platform, model_id, age_days
-  `).all(since) as Array<{
+  `).all(since)) as Array<{
     platform: string; model_id: string; age_days: number; total: number; successes: number;
     succ_out: number; succ_lat: number; succ_ttfb_sum: number; succ_ttfb_cnt: number;
   }>;
@@ -252,7 +251,7 @@ export function refreshStatsCache(db: Database, force = false): void {
   for (const b of buckets) {
     const key = `${b.platform}:${b.model_id}`;
     const w = decayWeight(b.age_days);
-    const a = acc.get(key) ?? { wSucc: 0, wFail: 0, wOut: 0, wLat: 0, wTtfbSum: 0, wTtfbCnt: 0 };
+    const a = (await acc.get(key)) ?? { wSucc: 0, wFail: 0, wOut: 0, wLat: 0, wTtfbSum: 0, wTtfbCnt: 0 };
     a.wSucc += w * b.successes;
     a.wFail += w * (b.total - b.successes);
     a.wOut += w * b.succ_out;
@@ -263,13 +262,13 @@ export function refreshStatsCache(db: Database, force = false): void {
   }
 
   // Calendar-month token usage per model, for the headroom guardrail.
-  const usageRows = db.prepare(`
+  const usageRows = (await db.prepare(`
     SELECT platform, model_id, COALESCE(SUM(input_tokens + output_tokens), 0) AS used
     FROM requests
     WHERE created_at >= datetime('now', 'start of month')
       AND request_type = 'chat'
     GROUP BY platform, model_id
-  `).all() as Array<{ platform: string; model_id: string; used: number }>;
+  `).all()) as Array<{ platform: string; model_id: string; used: number }>;
   const usageMap = new Map(usageRows.map(r => [`${r.platform}:${r.model_id}`, r.used]));
 
   const next = new Map<string, ModelStats>();
@@ -279,7 +278,7 @@ export function refreshStatsCache(db: Database, force = false): void {
       failures: a.wFail,
       tokPerSec: a.wLat > 0 ? (a.wOut * 1000) / a.wLat : 0,
       avgTtfbMs: a.wTtfbCnt > 0 ? a.wTtfbSum / a.wTtfbCnt : null,
-      monthlyUsedTokens: usageMap.get(key) ?? 0,
+      monthlyUsedTokens: (await usageMap.get(key)) ?? 0,
     });
   }
   // Models with month usage but no recent window data still need a headroom number.
@@ -312,14 +311,14 @@ interface ScoredEntry {
   score: number;
 }
 
-function scoreChainEntry(
+async function scoreChainEntry(
   entry: ChainRow,
   weights: RoutingWeights,
   intelMin: number,
   intelMax: number,
   sampled: boolean,
-): ScoredEntry {
-  const stats = statsCache?.get(`${entry.platform}:${entry.model_id}`);
+): Promise<ScoredEntry> {
+  const stats = (await statsCache?.get(`${entry.platform}:${entry.model_id}`));
   const successes = stats?.successes ?? 0;
   const failures = stats?.failures ?? 0;
 
@@ -338,7 +337,7 @@ function scoreChainEntry(
 
   const budget = parseBudget(entry.monthly_token_budget);
   const headroom = headroomFactor(stats?.monthlyUsedTokens ?? 0, budget);
-  const rl = rateLimitFactor(getPenalty(entry.model_db_id));
+  const rl = rateLimitFactor(await getPenalty(entry.model_db_id));
 
   const score = combineScore({ reliability, speed, intelligence, headroom, rateLimit: rl }, weights);
   return { axes: { reliability, speed, intelligence }, headroom, rateLimit: rl, score };
@@ -350,12 +349,12 @@ function scoreChainEntry(
  *  - bandit strategy      → Thompson-sampled convex score, manual priority as
  *                           the deterministic tiebreaker for (near-)equal scores.
  */
-function orderChain(chain: ChainRow[], strategy: RoutingStrategy): ChainRow[] {
-  const weights = weightsFor(strategy);
+async function orderChain(chain: ChainRow[], strategy: RoutingStrategy): Promise<ChainRow[]> {
+  const weights = await weightsFor(strategy);
   if (!weights) {
     // Legacy priority mode: base priority + 429 penalty, ascending.
-    return chain
-      .map(e => ({ e, eff: e.priority + getPenalty(e.model_db_id) }))
+    const effs = await Promise.all(chain.map(async e => ({ e, eff: e.priority + (await getPenalty(e.model_db_id)) })));
+    return effs
       .sort((a, b) => a.eff - b.eff || a.e.priority - b.e.priority)
       .map(x => x.e);
   }
@@ -364,8 +363,8 @@ function orderChain(chain: ChainRow[], strategy: RoutingStrategy): ChainRow[] {
   const intelMin = composites.length ? Math.min(...composites) : 0;
   const intelMax = composites.length ? Math.max(...composites) : 0;
 
-  return chain
-    .map(e => ({ e, s: scoreChainEntry(e, weights, intelMin, intelMax, true).score }))
+  const scored = await Promise.all(chain.map(async e => ({ e, s: (await scoreChainEntry(e, weights, intelMin, intelMax, true)).score })));
+  return scored
     // Higher score first; manual priority breaks ties so the chain still matters.
     .sort((a, b) => b.s - a.s || a.e.priority - b.e.priority)
     .map(x => x.e);
@@ -387,14 +386,14 @@ function orderChain(chain: ChainRow[], strategy: RoutingStrategy): ChainRow[] {
  * @param requireVision - only consider models that accept image input (#118)
  * @param requireTools - only consider models that emit structured tool_calls
  */
-export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number, requireVision = false, requireTools = false): RouteResult {
+export async function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number, requireVision = false, requireTools = false): Promise<RouteResult> {
   const db = getDb();
 
-  const strategy = getRoutingStrategy();
+  const strategy = await getRoutingStrategy();
   if (strategy !== 'priority') refreshStatsCache(db);
 
   // Get the enabled fallback chain joined with the fields the scorer needs.
-  const chain = db.prepare(`
+  const chain = (await db.prepare(`
     SELECT fc.model_db_id, fc.priority, fc.enabled,
            m.platform, m.model_id, m.display_name, m.intelligence_rank,
            m.size_label, m.monthly_token_budget,
@@ -403,9 +402,9 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id AND m.enabled = 1
     WHERE fc.enabled = 1
-  `).all() as ChainRow[];
+  `).all()) as ChainRow[];
 
-  const sortedChain = orderChain(chain, strategy);
+  const sortedChain = await orderChain(chain, strategy);
 
   // Sticky session: move preferred model to front of chain
   if (preferredModelDbId) {
@@ -440,13 +439,13 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
     if (entry.context_window != null && estimatedTokens > entry.context_window) continue;
 
     // Check if we have a provider for this platform
-    const provider = getProvider(entry.platform as any);
+    const provider = (await getProvider(entry.platform as any));
     if (!provider) continue;
 
     // Get enabled keys that have not already failed validation or decryption.
-    const keys = db.prepare(
-      "SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status IN ('healthy', 'unknown')"
-    ).all(entry.platform) as KeyRow[];
+    const keys = (await db.prepare(
+          "SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status IN ('healthy', 'unknown')"
+        ).all(entry.platform)) as KeyRow[];
 
     if (keys.length === 0) continue;
 
@@ -460,7 +459,7 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
 
     // Try all keys for this model before giving up on it
     const rrKey = `${entry.platform}:${entry.model_id}`;
-    let idx = roundRobinIndex.get(rrKey) ?? 0;
+    let idx = (await roundRobinIndex.get(rrKey)) ?? 0;
 
     for (let attempt = 0; attempt < keys.length; attempt++) {
       const key = keys[idx % keys.length];
@@ -476,22 +475,22 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
       if (skipKeys?.has(skipId)) continue;
 
       // Check cooldown (from previous 429s)
-      if (isOnCooldown(entry.platform, entry.model_id, key.id)) continue;
+      if ((await isOnCooldown(entry.platform, entry.model_id, key.id))) continue;
 
       // Provider-wide daily request cap (#162): providers like OpenRouter cap
       // total requests/day across ALL their models for the account, not per
       // model — skip every model on this provider once that key hits the cap.
-      if (!canUseProvider(entry.platform, key.id)) continue;
+      if (!(await canUseProvider(entry.platform, key.id))) continue;
 
-      if (!canMakeRequest(entry.platform, entry.model_id, key.id, limits)) continue;
-      if (!canUseTokens(entry.platform, entry.model_id, key.id, estimatedTokens, limits)) continue;
+      if (!(await canMakeRequest(entry.platform, entry.model_id, key.id, limits))) continue;
+      if (!(await canUseTokens(entry.platform, entry.model_id, key.id, estimatedTokens, limits))) continue;
 
       let decryptedKey: string;
       try {
         decryptedKey = decrypt(key.encrypted_key, key.iv, key.auth_tag);
       } catch {
-        db.prepare("UPDATE api_keys SET status = 'error', last_checked_at = datetime('now') WHERE id = ?")
-          .run(key.id);
+        (await db.prepare("UPDATE api_keys SET status = 'error', last_checked_at = datetime('now') WHERE id = ?")
+                    .run(key.id));
         continue;
       }
 
@@ -499,7 +498,7 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
       // base_url (the registered instance is just a placeholder). A custom key
       // with no base_url can't be routed — skip it.
       const resolvedProvider = entry.platform === 'custom'
-        ? resolveProvider('custom', key.base_url)
+        ? (await resolveProvider('custom', key.base_url))
         : provider;
       if (!resolvedProvider) continue;
 
@@ -552,12 +551,12 @@ export interface RoutingScore {
   totalRequests: number; // decay-weighted observations
 }
 
-export function getRoutingScores(): { strategy: RoutingStrategy; weights: RoutingWeights | null; scores: RoutingScore[] } {
+export async function getRoutingScores(): Promise<{ strategy: RoutingStrategy; weights: RoutingWeights | null; scores: RoutingScore[] }> {
   const db = getDb();
-  const strategy = getRoutingStrategy();
+  const strategy = await getRoutingStrategy();
   refreshStatsCache(db);
 
-  const chain = db.prepare(`
+  const chain = (await db.prepare(`
     SELECT fc.model_db_id, fc.priority, fc.enabled,
            m.platform, m.model_id, m.display_name, m.intelligence_rank,
            m.size_label, m.monthly_token_budget,
@@ -566,61 +565,62 @@ export function getRoutingScores(): { strategy: RoutingStrategy; weights: Routin
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id
     WHERE m.enabled = 1
-  `).all() as ChainRow[];
+  `).all()) as ChainRow[];
 
   // For display we score under 'balanced' weights when in priority mode, so the
   // table still shows a meaningful ranking even with the bandit turned off.
-  const weights = weightsFor(strategy) ?? BANDIT_PRESETS.balanced;
+  const weights = (await weightsFor(strategy)) ?? BANDIT_PRESETS.balanced;
   const composites = chain.map(e => intelligenceComposite(e.size_label, e.intelligence_rank));
   const intelMin = composites.length ? Math.min(...composites) : 0;
   const intelMax = composites.length ? Math.max(...composites) : 0;
 
-  const scores: RoutingScore[] = chain.map(entry => {
-    const scored = scoreChainEntry(entry, weights, intelMin, intelMax, false);
-    const stats = statsCache?.get(`${entry.platform}:${entry.model_id}`);
-    return {
-      modelDbId: entry.model_db_id,
-      platform: entry.platform,
-      modelId: entry.model_id,
-      displayName: entry.display_name,
-      enabled: entry.enabled === 1,
-      reliability: scored.axes.reliability,
-      speed: scored.axes.speed,
-      intelligence: scored.axes.intelligence,
-      headroom: scored.headroom,
-      rateLimit: scored.rateLimit,
-      score: scored.score,
-      totalRequests: Math.round((stats?.successes ?? 0) + (stats?.failures ?? 0)),
-    };
-  }).sort((a, b) => b.score - a.score);
+  const unsortedScores = await Promise.all(chain.map(async entry => {
+        const scored = await scoreChainEntry(entry, weights, intelMin, intelMax, false);
+        const stats = (await statsCache?.get(`${entry.platform}:${entry.model_id}`));
+        return {
+          modelDbId: entry.model_db_id,
+          platform: entry.platform,
+          modelId: entry.model_id,
+          displayName: entry.display_name,
+          enabled: entry.enabled === 1,
+          reliability: scored.axes.reliability,
+          speed: scored.axes.speed,
+          intelligence: scored.axes.intelligence,
+          headroom: scored.headroom,
+          rateLimit: scored.rateLimit,
+          score: scored.score,
+          totalRequests: Math.round((stats?.successes ?? 0) + (stats?.failures ?? 0)),
+        };
+      }));
+  const scores: RoutingScore[] = unsortedScores.sort((a, b) => b.score - a.score);
 
-  return { strategy, weights: weightsFor(strategy), scores };
+  return { strategy, weights: await weightsFor(strategy), scores };
 }
 
 // Whether at least one vision-capable model is enabled in the fallback chain.
 // Used to give image requests a clear "enable a vision model" error instead of
 // the generic exhaustion message when none is configured (#118, #125).
-export function hasEnabledVisionModel(): boolean {
+export async function hasEnabledVisionModel(): Promise<boolean> {
   const db = getDb();
-  const row = db.prepare(`
+  const row = (await db.prepare(`
     SELECT COUNT(*) as cnt
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id
     WHERE fc.enabled = 1 AND m.enabled = 1 AND m.supports_vision = 1
-  `).get() as { cnt: number };
+  `).get()) as { cnt: number };
   return row.cnt > 0;
 }
 
 // Whether at least one tool-capable model is enabled in the fallback chain.
 // Same role as hasEnabledVisionModel: a clear up-front error for tool-bearing
 // requests beats routing them to a model that mangles the tool call.
-export function hasEnabledToolsModel(): boolean {
+export async function hasEnabledToolsModel(): Promise<boolean> {
   const db = getDb();
-  const row = db.prepare(`
+  const row = (await db.prepare(`
     SELECT COUNT(*) as cnt
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id
     WHERE fc.enabled = 1 AND m.enabled = 1 AND m.supports_tools = 1
-  `).get() as { cnt: number };
+  `).get()) as { cnt: number };
   return row.cnt > 0;
 }

@@ -99,7 +99,7 @@ export class CloudflareProvider extends BaseProvider {
       throw new Error(`Cloudflare API error ${res.status}: ${(err as any).error?.message ?? (err as any).errors?.[0]?.message ?? res.statusText}`);
     }
 
-    yield* this.readSseStream(res);
+    yield* (await this.readSseStream(res));
   }
 
   async validateKey(apiKey: string): Promise<boolean> {

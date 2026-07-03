@@ -122,7 +122,7 @@ export abstract class BaseProvider {
         }
       }
     } finally {
-      reader.cancel().catch(() => { /* upstream already gone */ });
+      try { await reader.cancel(); } catch { /* upstream already gone */ }
     }
 
     if (!sawFinishReason) {

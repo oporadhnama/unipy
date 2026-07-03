@@ -159,7 +159,7 @@ function extractImageUrl(block: unknown): string | undefined {
 // surface, acceptable for a single-user self-hosted proxy; we still restrict to
 // http/https and cap the size. Returns null (part skipped) on any failure.
 async function imageUrlToInlineData(url: string): Promise<{ mimeType: string; data: string } | null> {
-  const dataMatch = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(url);
+  const dataMatch = (await /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(url));
   if (dataMatch) {
     const mimeType = dataMatch[1] || 'application/octet-stream';
     const isBase64 = Boolean(dataMatch[2]);
@@ -175,7 +175,7 @@ async function imageUrlToInlineData(url: string): Promise<{ mimeType: string; da
       if (!res.ok) return null;
       const buf = Buffer.from(await res.arrayBuffer());
       if (buf.length === 0 || buf.length > MAX_IMAGE_BYTES) return null;
-      const mimeType = res.headers.get('content-type')?.split(';')[0]?.trim() || 'image/jpeg';
+      const mimeType = (await res.headers.get('content-type'))?.split(';')[0]?.trim() || 'image/jpeg';
       return { mimeType, data: buf.toString('base64') };
     } catch {
       return null;
@@ -223,59 +223,59 @@ async function toGeminiContents(messages: ChatMessage[]) {
     }
   }
 
-  const contents = (await Promise.all(messages
-    .filter(m => m.role !== 'system')
-    .map(async (m): Promise<{ role: 'user' | 'model'; parts: GeminiPart[] } | null> => {
-      if (m.role === 'assistant') {
-        const parts: GeminiPart[] = [];
+  const contents = (await Promise.all((await messages
+          .filter(m => m.role !== 'system')
+          .map(async (m): Promise<{ role: 'user' | 'model'; parts: GeminiPart[] } | null> => {
+            if (m.role === 'assistant') {
+              const parts: GeminiPart[] = [];
 
-        const assistantText = contentToString(m.content);
-        if (assistantText.length > 0) {
-          parts.push({ text: assistantText });
-        }
+              const assistantText = contentToString(m.content);
+              if (assistantText.length > 0) {
+                parts.push({ text: assistantText });
+              }
 
-        for (const call of m.tool_calls ?? []) {
-          parts.push({
-            thoughtSignature: call.thought_signature,
-            functionCall: {
-              id: call.id,
-              name: call.function.name,
-              args: safeParseObject(call.function.arguments),
-            },
-          });
-        }
+              for (const call of m.tool_calls ?? []) {
+                parts.push({
+                  thoughtSignature: call.thought_signature,
+                  functionCall: {
+                    id: call.id,
+                    name: call.function.name,
+                    args: safeParseObject(call.function.arguments),
+                  },
+                });
+              }
 
-        if (parts.length === 0) return null;
-        return {
-          role: 'model',
-          parts,
-        };
-      }
+              if (parts.length === 0) return null;
+              return {
+                role: 'model',
+                parts,
+              };
+            }
 
-      if (m.role === 'tool') {
-        const toolCallId = m.tool_call_id;
-        if (!toolCallId) return null;
+            if (m.role === 'tool') {
+              const toolCallId = m.tool_call_id;
+              if (!toolCallId) return null;
 
-        const toolName = m.name ?? toolNameByCallId.get(toolCallId) ?? 'tool';
-        const response = safeParseObject(contentToString(m.content));
+              const toolName = m.name ?? (await toolNameByCallId.get(toolCallId)) ?? 'tool';
+              const response = safeParseObject(contentToString(m.content));
 
-        return {
-          role: 'user',
-          parts: [{
-            functionResponse: {
-              id: toolCallId,
-              name: toolName,
-              response,
-            },
-          }],
-        };
-      }
+              return {
+                role: 'user',
+                parts: [{
+                  functionResponse: {
+                    id: toolCallId,
+                    name: toolName,
+                    response,
+                  },
+                }],
+              };
+            }
 
-      return {
-        role: 'user',
-        parts: await userContentToParts(m.content),
-      };
-    })))
+            return {
+              role: 'user',
+              parts: await userContentToParts(m.content),
+            };
+          }))))
     .filter((entry): entry is { role: 'user' | 'model'; parts: GeminiPart[] } => entry !== null);
 
   return {

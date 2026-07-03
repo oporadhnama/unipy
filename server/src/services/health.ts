@@ -11,10 +11,10 @@ const failureCount = new Map<number, number>();
 
 export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM api_keys WHERE id = ?').get(keyId) as any;
+  const row = await db.prepare('SELECT * FROM api_keys WHERE id = ?').get(keyId) as any;
   if (!row) return 'error';
 
-  const provider = resolveProvider(row.platform as Platform, row.base_url);
+  const provider = await resolveProvider(row.platform as Platform, row.base_url);
   if (!provider) return 'error';
 
   try {
@@ -23,7 +23,7 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
 
     const status: KeyStatus = isValid ? 'healthy' : 'invalid';
 
-    db.prepare("UPDATE api_keys SET status = ?, last_checked_at = datetime('now') WHERE id = ?")
+    await db.prepare("UPDATE api_keys SET status = ?, last_checked_at = datetime('now') WHERE id = ?")
       .run(status, keyId);
 
     if (isValid) {
@@ -33,7 +33,7 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
       failureCount.set(keyId, count);
 
       if (count >= CONSECUTIVE_FAILURES_TO_DISABLE) {
-        db.prepare('UPDATE api_keys SET enabled = 0 WHERE id = ?').run(keyId);
+        await db.prepare('UPDATE api_keys SET enabled = 0 WHERE id = ?').run(keyId);
         console.log(`[Health] Auto-disabled key ${keyId} after ${count} consecutive failures`);
       }
     }
@@ -44,7 +44,7 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
     // a bad key. Mark status='error' but do NOT increment failure counter — auto-
     // disable is reserved for confirmed 401/403 (returned by validateKey as false).
     console.error(`[Health] Key ${keyId} transport error:`, err.message);
-    db.prepare("UPDATE api_keys SET status = ?, last_checked_at = datetime('now') WHERE id = ?")
+    await db.prepare("UPDATE api_keys SET status = ?, last_checked_at = datetime('now') WHERE id = ?")
       .run('error', keyId);
     return 'error';
   }
@@ -52,7 +52,7 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
 
 export async function checkAllKeys(): Promise<void> {
   const db = getDb();
-  const keys = db.prepare('SELECT id, platform FROM api_keys WHERE enabled = 1').all() as { id: number; platform: string }[];
+  const keys = await db.prepare('SELECT id, platform FROM api_keys WHERE enabled = 1').all() as { id: number; platform: string }[];
 
   console.log(`[Health] Checking ${keys.length} keys...`);
 
@@ -69,7 +69,7 @@ export function startHealthChecker(): void {
   if (intervalId) return;
   console.log(`[Health] Starting health checker (every ${CHECK_INTERVAL_MS / 1000}s)`);
   intervalId = setInterval(() => {
-    checkAllKeys().catch(err => console.error('[Health] Check failed:', err));
+    (async () => { try { await checkAllKeys(); } catch (err) { console.error('[Health] Check failed:', err); } })();
   }, CHECK_INTERVAL_MS);
 }
 

@@ -179,8 +179,8 @@ register(new OpenAICompatProvider({
 // custom providers get the same extended timeout as Ollama Cloud.
 const CUSTOM_PROVIDER_TIMEOUT_MS = 120000;
 
-export function getProvider(platform: Platform): BaseProvider | undefined {
-  return providers.get(platform);
+export async function getProvider(platform: Platform): Promise<BaseProvider | undefined> {
+  return (await providers.get(platform));
 }
 
 /**
@@ -189,7 +189,7 @@ export function getProvider(platform: Platform): BaseProvider | undefined {
  * the caller-supplied base URL (stored per api_keys row). Returns undefined for
  * a custom provider with no base URL configured.
  */
-export function resolveProvider(platform: Platform, baseUrl?: string | null): BaseProvider | undefined {
+export async function resolveProvider(platform: Platform, baseUrl?: string | null): Promise<BaseProvider | undefined> {
   if (platform === 'custom') {
     const trimmed = baseUrl?.trim();
     if (!trimmed) return undefined;
@@ -200,7 +200,7 @@ export function resolveProvider(platform: Platform, baseUrl?: string | null): Ba
       timeoutMs: CUSTOM_PROVIDER_TIMEOUT_MS,
     });
   }
-  return providers.get(platform);
+  return (await providers.get(platform));
 }
 
 export function getAllProviders(): BaseProvider[] {

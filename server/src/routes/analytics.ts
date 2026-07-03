@@ -25,7 +25,7 @@ function getSinceTimestamp(range: string): string {
 }
 
 // Summary stats
-analyticsRouter.get('/summary', (req: Request, res: Response) => {
+(await analyticsRouter.get('/summary', async (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const since = getSinceTimestamp(range);
   const db = getDb();
@@ -35,7 +35,7 @@ analyticsRouter.get('/summary', (req: Request, res: Response) => {
   // with a modest fallback for custom/unmapped models, and only count
   // successful requests. This is "what the same tokens would have cost on
   // paid APIs", not a GPT-4o fantasy number.
-  const stats = db.prepare(`
+  const stats = await db.prepare(`
     SELECT
       COUNT(*) as total_requests,
       SUM(CASE WHEN r.status = 'success' THEN 1 ELSE 0 END) as success_count,
@@ -73,15 +73,15 @@ analyticsRouter.get('/summary', (req: Request, res: Response) => {
     // install shouldn't extrapolate as if the whole range had traffic).
     firstRequestAt: stats.first_request_at ?? null,
   });
-});
+}));
 
 // Stats grouped by model
-analyticsRouter.get('/by-model', (req: Request, res: Response) => {
+(await analyticsRouter.get('/by-model', async (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const since = getSinceTimestamp(range);
   const db = getDb();
 
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT
       r.platform,
       r.model_id,
@@ -116,15 +116,15 @@ analyticsRouter.get('/by-model', (req: Request, res: Response) => {
     pinnedRequests: r.pinned_requests ?? 0,
     estimatedCost: Math.round((r.est_cost ?? 0) * 100) / 100,
   })));
-});
+}));
 
 // Stats grouped by platform
-analyticsRouter.get('/by-platform', (req: Request, res: Response) => {
+(await analyticsRouter.get('/by-platform', async (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const since = getSinceTimestamp(range);
   const db = getDb();
 
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT
       platform,
       COUNT(*) as requests,
@@ -146,10 +146,10 @@ analyticsRouter.get('/by-platform', (req: Request, res: Response) => {
     totalInputTokens: r.total_input_tokens ?? 0,
     totalOutputTokens: r.total_output_tokens ?? 0,
   })));
-});
+}));
 
 // Timeline data
-analyticsRouter.get('/timeline', (req: Request, res: Response) => {
+(await analyticsRouter.get('/timeline', async (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const interval = (req.query.interval as string) ?? (range === '24h' ? 'hour' : 'day');
   const since = getSinceTimestamp(range);
@@ -158,7 +158,7 @@ analyticsRouter.get('/timeline', (req: Request, res: Response) => {
   // dateFormat is a hardcoded whitelist — never user-controlled.
   const dateFormat = interval === 'hour' ? '%Y-%m-%dT%H:00:00' : '%Y-%m-%d';
 
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT
       strftime('${dateFormat}', created_at) as timestamp,
       COUNT(*) as requests,
@@ -176,16 +176,16 @@ analyticsRouter.get('/timeline', (req: Request, res: Response) => {
     successCount: r.success_count,
     failureCount: r.failure_count,
   })));
-});
+}));
 
 // Error distribution (grouped by error type and platform)
-analyticsRouter.get('/error-distribution', (req: Request, res: Response) => {
+(await analyticsRouter.get('/error-distribution', async (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const since = getSinceTimestamp(range);
   const db = getDb();
 
   // Group errors by category (extract the key part of the error message)
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT
       platform,
       model_id,
@@ -207,7 +207,7 @@ analyticsRouter.get('/error-distribution', (req: Request, res: Response) => {
   `).all(since) as any[];
 
   // Also get totals by category
-  const byCategory = db.prepare(`
+  const byCategory = await db.prepare(`
     SELECT
       CASE
         WHEN error LIKE '%429%' OR error LIKE '%rate limit%' OR error LIKE '%too many%' OR error LIKE '%quota%' THEN 'Rate Limited (429)'
@@ -227,7 +227,7 @@ analyticsRouter.get('/error-distribution', (req: Request, res: Response) => {
   `).all(since) as any[];
 
   // Errors by platform
-  const byPlatform = db.prepare(`
+  const byPlatform = await db.prepare(`
     SELECT platform, COUNT(*) as count
     FROM requests
     WHERE status = 'error' AND created_at >= ?
@@ -240,15 +240,15 @@ analyticsRouter.get('/error-distribution', (req: Request, res: Response) => {
     byPlatform,
     detailed: rows,
   });
-});
+}));
 
 // Recent errors
-analyticsRouter.get('/errors', (req: Request, res: Response) => {
+(await analyticsRouter.get('/errors', async (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const since = getSinceTimestamp(range);
   const db = getDb();
 
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT id, platform, model_id, error, latency_ms, created_at
     FROM requests
     WHERE status = 'error' AND created_at >= ?
@@ -264,4 +264,4 @@ analyticsRouter.get('/errors', (req: Request, res: Response) => {
     latencyMs: r.latency_ms,
     createdAt: r.created_at,
   })));
-});
+}));

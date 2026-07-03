@@ -7,10 +7,10 @@ import { hasProvider } from '../providers/index.js';
 export const healthRouter = Router();
 
 // Get health status for all platforms
-healthRouter.get('/', (_req: Request, res: Response) => {
+(await healthRouter.get('/', async (_req: Request, res: Response) => {
   const db = getDb();
 
-  const platforms = db.prepare(`
+  const platforms = await db.prepare(`
     SELECT
       platform,
       COUNT(*) as total_keys,
@@ -24,7 +24,7 @@ healthRouter.get('/', (_req: Request, res: Response) => {
     GROUP BY platform
   `).all() as any[];
 
-  const keys = db.prepare(`
+  const keys = await db.prepare(`
     SELECT id, platform, label, status, enabled, created_at, last_checked_at
     FROM api_keys
     ORDER BY platform, created_at DESC
@@ -52,7 +52,7 @@ healthRouter.get('/', (_req: Request, res: Response) => {
       lastCheckedAt: k.last_checked_at,
     })),
   });
-});
+}));
 
 // Check a specific key
 healthRouter.post('/check/:keyId', async (req: Request, res: Response) => {

@@ -32,9 +32,9 @@ const updateKeySchema = z.object({
 });
 
 // List all keys (masked)
-keysRouter.get('/', (_req: Request, res: Response) => {
+(await keysRouter.get('/', async (_req: Request, res: Response) => {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM api_keys ORDER BY created_at DESC').all() as any[];
+  const rows = await db.prepare('SELECT * FROM api_keys ORDER BY created_at DESC').all() as any[];
 
   const keys = rows.map(row => {
     let maskedKey = '****';
@@ -58,10 +58,10 @@ keysRouter.get('/', (_req: Request, res: Response) => {
   });
 
   res.json(keys);
-});
+}));
 
 // Add a key
-keysRouter.post('/', (req: Request, res: Response) => {
+keysRouter.post('/', async (req: Request, res: Response) => {
   const parsed = addKeySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } });
@@ -69,7 +69,7 @@ keysRouter.post('/', (req: Request, res: Response) => {
   }
 
   const { platform, label } = parsed.data;
-  const isKeyless = resolveProvider(platform)?.keyless === true;
+  const isKeyless = (await resolveProvider(platform))?.keyless === true;
   const rawKey = parsed.data.key?.trim() ?? '';
 
   if (!isKeyless && !rawKey) {
@@ -86,9 +86,9 @@ keysRouter.post('/', (req: Request, res: Response) => {
   // A keyless provider needs only one sentinel row — re-enable an existing one
   // instead of piling up duplicates each time the user clicks "Add".
   if (isKeyless) {
-    const existing = db.prepare('SELECT id FROM api_keys WHERE platform = ? LIMIT 1').get(platform) as { id: number } | undefined;
+    const existing = await db.prepare('SELECT id FROM api_keys WHERE platform = ? LIMIT 1').get(platform) as { id: number } | undefined;
     if (existing) {
-      db.prepare("UPDATE api_keys SET enabled = 1, status = 'unknown' WHERE id = ?").run(existing.id);
+      await db.prepare("UPDATE api_keys SET enabled = 1, status = 'unknown' WHERE id = ?").run(existing.id);
       res.status(200).json({
         id: existing.id,
         platform,
@@ -102,9 +102,9 @@ keysRouter.post('/', (req: Request, res: Response) => {
   }
 
   const { encrypted, iv, authTag } = encrypt(keyToStore);
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
-    VALUES (?, ?, ?, ?, ?, 'unknown', 1)
+    VALUES (?, ?, ?, ?, ?, 'unknown', 1) RETURNING id
   `).run(platform, label ?? '', encrypted, iv, authTag);
 
   res.status(201).json({
@@ -132,7 +132,7 @@ const customProviderSchema = z.object({
   label: z.string().optional(),
 });
 
-keysRouter.post('/custom', (req: Request, res: Response) => {
+keysRouter.post('/custom', async (req: Request, res: Response) => {
   const parsed = customProviderSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } });
@@ -147,23 +147,23 @@ keysRouter.post('/custom', (req: Request, res: Response) => {
   const label = parsed.data.label ?? 'Custom';
 
   const db = getDb();
-  const upsert = db.transaction(() => {
+  const upsert = db.transaction(async () => {
     // One 'custom' key row PER ENDPOINT (matched on base_url). Re-submitting
     // the same endpoint updates its key/label; a new base_url gets its own
     // row instead of clobbering the previous provider. (#212)
-    const existing = db.prepare("SELECT id FROM api_keys WHERE platform = 'custom' AND base_url = ? LIMIT 1")
-      .get(baseUrl) as { id: number } | undefined;
+    const existing = await db.prepare("SELECT id FROM api_keys WHERE platform = 'custom' AND base_url = ? LIMIT 1")
+          .get(baseUrl) as { id: number } | undefined;
     let keyId: number;
     if (existing) {
       const { encrypted, iv, authTag } = encrypt(rawKey);
-      db.prepare("UPDATE api_keys SET label = ?, encrypted_key = ?, iv = ?, auth_tag = ?, status = 'unknown', enabled = 1 WHERE id = ?")
-        .run(label, encrypted, iv, authTag, existing.id);
+      await db.prepare("UPDATE api_keys SET label = ?, encrypted_key = ?, iv = ?, auth_tag = ?, status = 'unknown', enabled = 1 WHERE id = ?")
+                .run(label, encrypted, iv, authTag, existing.id);
       keyId = existing.id;
     } else {
       const { encrypted, iv, authTag } = encrypt(rawKey);
-      const r = db.prepare(`
+      const r = await db.prepare(`
         INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled, base_url)
-        VALUES ('custom', ?, ?, ?, ?, 'unknown', 1, ?)
+        VALUES ('custom', ?, ?, ?, ?, 'unknown', 1, ?) RETURNING id
       `).run(label, encrypted, iv, authTag, baseUrl);
       keyId = Number(r.lastInsertRowid);
     }
@@ -172,7 +172,7 @@ keysRouter.post('/custom', (req: Request, res: Response) => {
     // rate limits and sort last in the intelligence preset (size_label tier).
     // Re-registering an existing model id re-binds it (model ids are unique
     // per platform, so one id can't live on two endpoints at once).
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO models
         (platform, model_id, display_name, intelligence_rank, speed_rank, size_label,
          rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window, enabled, key_id)
@@ -181,19 +181,19 @@ keysRouter.post('/custom', (req: Request, res: Response) => {
       DO UPDATE SET display_name = excluded.display_name, key_id = excluded.key_id, enabled = 1
     `).run(modelId, displayName, keyId);
 
-    const modelRow = db.prepare("SELECT id FROM models WHERE platform = 'custom' AND model_id = ?").get(modelId) as { id: number };
+    const modelRow = await db.prepare("SELECT id FROM models WHERE platform = 'custom' AND model_id = ?").get(modelId) as { id: number };
 
     // Append to the fallback chain if not already present.
-    const inChain = db.prepare('SELECT 1 FROM fallback_config WHERE model_db_id = ?').get(modelRow.id);
+    const inChain = await db.prepare('SELECT 1 FROM fallback_config WHERE model_db_id = ?').get(modelRow.id);
     if (!inChain) {
-      const max = db.prepare('SELECT COALESCE(MAX(priority), 0) AS m FROM fallback_config').get() as { m: number };
-      db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)').run(modelRow.id, max.m + 1);
+      const max = await db.prepare('SELECT COALESCE(MAX(priority), 0) AS m FROM fallback_config').get() as { m: number };
+      await db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)').run(modelRow.id, max.m + 1);
     }
 
     return { keyId, modelDbId: modelRow.id };
   });
 
-  const { keyId, modelDbId } = upsert();
+  const { keyId, modelDbId } = (await upsert());
   res.status(201).json({
     success: true,
     keyId,
@@ -207,7 +207,7 @@ keysRouter.post('/custom', (req: Request, res: Response) => {
 });
 
 // Delete a key
-keysRouter.delete('/:id', (req: Request, res: Response) => {
+keysRouter.delete('/:id', async (req: Request, res: Response) => {
   const id = parseInt(req.params.id as string, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: { message: 'Invalid key ID' } });
@@ -215,36 +215,36 @@ keysRouter.delete('/:id', (req: Request, res: Response) => {
   }
 
   const db = getDb();
-  const row = db.prepare('SELECT platform FROM api_keys WHERE id = ?').get(id) as { platform: string } | undefined;
+  const row = await db.prepare('SELECT platform FROM api_keys WHERE id = ?').get(id) as { platform: string } | undefined;
   if (!row) {
     res.status(404).json({ error: { message: 'Key not found' } });
     return;
   }
 
-  const remove = db.transaction(() => {
-    db.prepare('DELETE FROM api_keys WHERE id = ?').run(id);
+  const remove = db.transaction(async () => {
+    await db.prepare('DELETE FROM api_keys WHERE id = ?').run(id);
     // Custom models exist only because POST /custom registered them alongside
     // their endpoint key (#117) — they can't route without it. Cascade away
     // the models bound to THIS endpoint (#212); other custom providers keep
     // theirs. Legacy rows (key_id NULL) are swept once no custom keys remain,
     // so they never linger in the fallback chain forever (#189).
     if (row.platform === 'custom') {
-      db.prepare("DELETE FROM fallback_config WHERE model_db_id IN (SELECT id FROM models WHERE platform = 'custom' AND key_id = ?)").run(id);
-      db.prepare("DELETE FROM models WHERE platform = 'custom' AND key_id = ?").run(id);
-      const remaining = db.prepare("SELECT COUNT(*) AS n FROM api_keys WHERE platform = 'custom'").get() as { n: number };
+      await db.prepare("DELETE FROM fallback_config WHERE model_db_id IN (SELECT id FROM models WHERE platform = 'custom' AND key_id = ?)").run(id);
+      await db.prepare("DELETE FROM models WHERE platform = 'custom' AND key_id = ?").run(id);
+      const remaining = await db.prepare("SELECT COUNT(*) AS n FROM api_keys WHERE platform = 'custom'").get() as { n: number };
       if (remaining.n === 0) {
-        db.prepare("DELETE FROM fallback_config WHERE model_db_id IN (SELECT id FROM models WHERE platform = 'custom')").run();
-        db.prepare("DELETE FROM models WHERE platform = 'custom'").run();
+        await db.prepare("DELETE FROM fallback_config WHERE model_db_id IN (SELECT id FROM models WHERE platform = 'custom')").run();
+        await db.prepare("DELETE FROM models WHERE platform = 'custom'").run();
       }
     }
   });
-  remove();
+  (await remove());
 
   res.json({ success: true });
 });
 
 // Toggle all keys for a platform
-keysRouter.patch('/platform/:platform', (req: Request, res: Response) => {
+keysRouter.patch('/platform/:platform', async (req: Request, res: Response) => {
   const platform = req.params.platform as string;
   if (!(PLATFORMS as readonly string[]).includes(platform)) {
     res.status(400).json({ error: { message: `Invalid platform '${platform}'` } });
@@ -258,13 +258,13 @@ keysRouter.patch('/platform/:platform', (req: Request, res: Response) => {
   }
 
   const db = getDb();
-  const result = db.prepare('UPDATE api_keys SET enabled = ? WHERE platform = ?').run(enabled ? 1 : 0, platform);
+  const result = await db.prepare('UPDATE api_keys SET enabled = ? WHERE platform = ?').run(enabled ? 1 : 0, platform);
 
   res.json({ success: true, enabled, updatedKeys: result.changes });
 });
 
 // Update key (toggle enable/disable or edit label)
-keysRouter.patch('/:id', (req: Request, res: Response) => {
+keysRouter.patch('/:id', async (req: Request, res: Response) => {
   const id = parseInt(req.params.id as string, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: { message: 'Invalid key ID' } });
@@ -293,7 +293,7 @@ keysRouter.patch('/:id', (req: Request, res: Response) => {
   values.push(id);
 
   const db = getDb();
-  const result = db.prepare(`UPDATE api_keys SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  const result = await db.prepare(`UPDATE api_keys SET ${updates.join(', ')} WHERE id = ?`).run(...values);
 
   if (result.changes === 0) {
     res.status(404).json({ error: { message: 'Key not found' } });

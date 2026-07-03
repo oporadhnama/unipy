@@ -13,8 +13,8 @@ const windows = new Map<string, Window>();
 type RateLimitDb = ReturnType<typeof getDb>;
 type UsageKind = 'request' | 'tokens';
 
-function getWindow(key: string): Window {
-  let w = windows.get(key);
+async function getWindow(key: string): Promise<Window> {
+  let w = (await windows.get(key));
   if (!w) {
     w = { timestamps: [], tokenCount: 0, tokenTimestamps: [] };
     windows.set(key, w);
@@ -38,7 +38,7 @@ function withDb<T>(fn: (db: RateLimitDb) => T): T | undefined {
   }
 }
 
-function recordUsage(
+async function recordUsage(
   platform: string,
   modelId: string,
   keyId: number,
@@ -46,24 +46,24 @@ function recordUsage(
   tokens: number,
   now: number,
 ) {
-  withDb(db => {
-    db.prepare(`
+  (await withDb(async db => {
+        await db.prepare(`
       INSERT INTO rate_limit_usage (platform, model_id, key_id, kind, tokens, created_at_ms)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(platform, modelId, keyId, kind, tokens, now);
-    db.prepare('DELETE FROM rate_limit_usage WHERE created_at_ms <= ?').run(now - DAY);
-  });
+        await db.prepare('DELETE FROM rate_limit_usage WHERE created_at_ms <= ?').run(now - DAY);
+      }));
 }
 
-function countPersistedRequests(
+async function countPersistedRequests(
   platform: string,
   modelId: string,
   keyId: number,
   windowMs: number,
   now: number,
-): number | undefined {
-  return withDb(db => {
-    const row = db.prepare(`
+): Promise<number | undefined> {
+  return (await withDb(async db => {
+      const row = await db.prepare(`
       SELECT COUNT(*) AS used
         FROM rate_limit_usage
        WHERE platform = ?
@@ -72,19 +72,19 @@ function countPersistedRequests(
          AND kind = 'request'
          AND created_at_ms > ?
     `).get(platform, modelId, keyId, now - windowMs) as { used: number };
-    return row.used;
-  });
+      return row.used;
+    }));
 }
 
-function sumPersistedTokens(
+async function sumPersistedTokens(
   platform: string,
   modelId: string,
   keyId: number,
   windowMs: number,
   now: number,
-): number | undefined {
-  return withDb(db => {
-    const row = db.prepare(`
+): Promise<number | undefined> {
+  return (await withDb(async db => {
+      const row = await db.prepare(`
       SELECT COALESCE(SUM(tokens), 0) AS used
         FROM rate_limit_usage
        WHERE platform = ?
@@ -93,83 +93,83 @@ function sumPersistedTokens(
          AND kind = 'tokens'
          AND created_at_ms > ?
     `).get(platform, modelId, keyId, now - windowMs) as { used: number };
-    return row.used;
-  });
+      return row.used;
+    }));
 }
 
-function memoryRequestCount(key: string, windowMs: number, now: number): number {
-  const w = getWindow(key);
+async function memoryRequestCount(key: string, windowMs: number, now: number): Promise<number> {
+  const w = (await getWindow(key));
   w.timestamps = pruneTimestamps(w.timestamps, windowMs, now);
   return w.timestamps.length;
 }
 
-function memoryTokenCount(key: string, windowMs: number, now: number): number {
-  const w = getWindow(key);
+async function memoryTokenCount(key: string, windowMs: number, now: number): Promise<number> {
+  const w = (await getWindow(key));
   w.tokenTimestamps = w.tokenTimestamps.filter(t => t.ts > now - windowMs);
   return w.tokenTimestamps.reduce((sum, t) => sum + t.tokens, 0);
 }
 
-function requestCount(
+async function requestCount(
   platform: string,
   modelId: string,
   keyId: number,
   windowMs: number,
   now: number,
-): number {
-  const persisted = countPersistedRequests(platform, modelId, keyId, windowMs, now);
+): Promise<number> {
+  const persisted = (await countPersistedRequests(platform, modelId, keyId, windowMs, now));
   if (persisted !== undefined) return persisted;
   const type = windowMs === MINUTE ? 'rpm' : 'rpd';
-  return memoryRequestCount(`${platform}:${modelId}:${keyId}:${type}`, windowMs, now);
+  return (await memoryRequestCount(`${platform}:${modelId}:${keyId}:${type}`, windowMs, now));
 }
 
-function tokenCount(
+async function tokenCount(
   platform: string,
   modelId: string,
   keyId: number,
   windowMs: number,
   now: number,
-): number {
-  const persisted = sumPersistedTokens(platform, modelId, keyId, windowMs, now);
+): Promise<number> {
+  const persisted = (await sumPersistedTokens(platform, modelId, keyId, windowMs, now));
   if (persisted !== undefined) return persisted;
   const type = windowMs === MINUTE ? 'tpm' : 'tpd';
-  return memoryTokenCount(`${platform}:${modelId}:${keyId}:${type}`, windowMs, now);
+  return (await memoryTokenCount(`${platform}:${modelId}:${keyId}:${type}`, windowMs, now));
 }
 
-export function canMakeRequest(
+export async function canMakeRequest(
   platform: string,
   modelId: string,
   keyId: number,
   limits: { rpm: number | null; rpd: number | null; tpm: number | null; tpd: number | null },
-): boolean {
+): Promise<boolean> {
   const now = Date.now();
 
   if (limits.rpm !== null) {
-    if (requestCount(platform, modelId, keyId, MINUTE, now) >= limits.rpm) return false;
+    if ((await requestCount(platform, modelId, keyId, MINUTE, now)) >= limits.rpm) return false;
   }
 
   if (limits.rpd !== null) {
-    if (requestCount(platform, modelId, keyId, DAY, now) >= limits.rpd) return false;
+    if ((await requestCount(platform, modelId, keyId, DAY, now)) >= limits.rpd) return false;
   }
 
   return true;
 }
 
-export function canUseTokens(
+export async function canUseTokens(
   platform: string,
   modelId: string,
   keyId: number,
   estimatedTokens: number,
   limits: { tpm: number | null; tpd: number | null },
-): boolean {
+): Promise<boolean> {
   const now = Date.now();
 
   if (limits.tpm !== null) {
-    const used = tokenCount(platform, modelId, keyId, MINUTE, now);
+    const used = (await tokenCount(platform, modelId, keyId, MINUTE, now));
     if (used + estimatedTokens > limits.tpm) return false;
   }
 
   if (limits.tpd !== null) {
-    const used = tokenCount(platform, modelId, keyId, DAY, now);
+    const used = (await tokenCount(platform, modelId, keyId, DAY, now));
     if (used + estimatedTokens > limits.tpd) return false;
   }
 
@@ -199,14 +199,14 @@ export function getProviderDailyRequestCap(platform: string): number | null {
   return DEFAULT_PROVIDER_DAILY_REQUEST_CAPS[platform] ?? null;
 }
 
-function countPersistedProviderRequests(
+async function countPersistedProviderRequests(
   platform: string,
   keyId: number,
   windowMs: number,
   now: number,
-): number | undefined {
-  return withDb(db => {
-    const row = db.prepare(`
+): Promise<number | undefined> {
+  return (await withDb(async db => {
+      const row = await db.prepare(`
       SELECT COUNT(*) AS used
         FROM rate_limit_usage
        WHERE platform = ?
@@ -214,13 +214,13 @@ function countPersistedProviderRequests(
          AND kind = 'request'
          AND created_at_ms > ?
     `).get(platform, keyId, now - windowMs) as { used: number };
-    return row.used;
-  });
+      return row.used;
+    }));
 }
 
 // Total requests today for a provider account+key, summed across every model.
-export function providerDailyRequestCount(platform: string, keyId: number, now = Date.now()): number {
-  const persisted = countPersistedProviderRequests(platform, keyId, DAY, now);
+export async function providerDailyRequestCount(platform: string, keyId: number, now = Date.now()): Promise<number> {
+  const persisted = (await countPersistedProviderRequests(platform, keyId, DAY, now));
   if (persisted !== undefined) return persisted;
   // DB-unavailable fallback: sum the per-model rpd windows for this platform+key.
   // Window key format is "platform:modelId:keyId:rpd" (modelId may contain ':').
@@ -235,25 +235,25 @@ export function providerDailyRequestCount(platform: string, keyId: number, now =
 
 // False when this provider account+key has hit its shared daily request cap, so
 // the router skips every model on that provider for this key until UTC-ish reset.
-export function canUseProvider(platform: string, keyId: number, now = Date.now()): boolean {
+export async function canUseProvider(platform: string, keyId: number, now = Date.now()): Promise<boolean> {
   const cap = getProviderDailyRequestCap(platform);
   if (cap === null) return true;
-  return providerDailyRequestCount(platform, keyId, now) < cap;
+  return (await providerDailyRequestCount(platform, keyId, now)) < cap;
 }
 
-export function recordRequest(platform: string, modelId: string, keyId: number) {
+export async function recordRequest(platform: string, modelId: string, keyId: number) {
   const now = Date.now();
 
   const rpmKey = `${platform}:${modelId}:${keyId}:rpm`;
-  getWindow(rpmKey).timestamps.push(now);
+  (await getWindow(rpmKey)).timestamps.push(now);
 
   const rpdKey = `${platform}:${modelId}:${keyId}:rpd`;
-  getWindow(rpdKey).timestamps.push(now);
+  (await getWindow(rpdKey)).timestamps.push(now);
 
-  recordUsage(platform, modelId, keyId, 'request', 0, now);
+  (await recordUsage(platform, modelId, keyId, 'request', 0, now));
 }
 
-export function recordTokens(
+export async function recordTokens(
   platform: string,
   modelId: string,
   keyId: number,
@@ -262,12 +262,12 @@ export function recordTokens(
   const now = Date.now();
 
   const tpmKey = `${platform}:${modelId}:${keyId}:tpm`;
-  getWindow(tpmKey).tokenTimestamps.push({ ts: now, tokens });
+  (await getWindow(tpmKey)).tokenTimestamps.push({ ts: now, tokens });
 
   const tpdKey = `${platform}:${modelId}:${keyId}:tpd`;
-  getWindow(tpdKey).tokenTimestamps.push({ ts: now, tokens });
+  (await getWindow(tpdKey)).tokenTimestamps.push({ ts: now, tokens });
 
-  recordUsage(platform, modelId, keyId, 'tokens', tokens, now);
+  (await recordUsage(platform, modelId, keyId, 'tokens', tokens, now));
 }
 
 // Cooldown: when a provider returns 429, block that model+key for a period
@@ -288,10 +288,10 @@ const COOLDOWN_DURATIONS = [
   DAY,          // 4th and beyond
 ];
 
-export function getNextCooldownDuration(platform: string, modelId: string, keyId: number): number {
+export async function getNextCooldownDuration(platform: string, modelId: string, keyId: number): Promise<number> {
   const key = `${platform}:${modelId}:${keyId}`;
   const now = Date.now();
-  const hits = (cooldownHits.get(key) ?? []).filter(t => t > now - DAY);
+  const hits = ((await cooldownHits.get(key)) ?? []).filter(t => t > now - DAY);
   hits.push(now);
   cooldownHits.set(key, hits);
   const idx = Math.min(hits.length - 1, COOLDOWN_DURATIONS.length - 1);
@@ -321,84 +321,84 @@ export const PAYMENT_REQUIRED_COOLDOWN_MS = DAY;
 // (2m → 10m → 1h → 24h) and quarantined a perfectly healthy provider for the
 // rest of the day. Daily counters are persisted (countPersistedRequests /
 // sumPersistedTokens), so this verdict is stable across restarts.
-export function getCooldownDurationForLimit(
+export async function getCooldownDurationForLimit(
   platform: string,
   modelId: string,
   keyId: number,
   limits: { rpd: number | null; tpd: number | null },
-): number {
+): Promise<number> {
   const now = Date.now();
   const rpdExhausted =
-    limits.rpd !== null && requestCount(platform, modelId, keyId, DAY, now) >= limits.rpd;
+    limits.rpd !== null && (await requestCount(platform, modelId, keyId, DAY, now)) >= limits.rpd;
   const tpdExhausted =
-    limits.tpd !== null && tokenCount(platform, modelId, keyId, DAY, now) >= limits.tpd;
+    limits.tpd !== null && (await tokenCount(platform, modelId, keyId, DAY, now)) >= limits.tpd;
   if (rpdExhausted || tpdExhausted) {
-    return getNextCooldownDuration(platform, modelId, keyId);
+    return (await getNextCooldownDuration(platform, modelId, keyId));
   }
   return TRANSIENT_COOLDOWN_MS;
 }
 
-function persistedCooldownExpiry(
+async function persistedCooldownExpiry(
   platform: string,
   modelId: string,
   keyId: number,
-): number | null | undefined {
-  return withDb(db => {
-    const row = db.prepare(`
+): Promise<number | null | undefined> {
+  return (await withDb(async db => {
+      const row = await db.prepare(`
       SELECT expires_at_ms
         FROM rate_limit_cooldowns
        WHERE platform = ?
          AND model_id = ?
          AND key_id = ?
     `).get(platform, modelId, keyId) as { expires_at_ms: number } | undefined;
-    return row?.expires_at_ms ?? null;
-  });
+      return row?.expires_at_ms ?? null;
+    }));
 }
 
-function persistCooldown(platform: string, modelId: string, keyId: number, expiresAtMs: number) {
-  withDb(db => {
-    db.prepare(`
+async function persistCooldown(platform: string, modelId: string, keyId: number, expiresAtMs: number) {
+  (await withDb(async db => {
+        await db.prepare(`
       INSERT INTO rate_limit_cooldowns (platform, model_id, key_id, expires_at_ms)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(platform, model_id, key_id)
       DO UPDATE SET expires_at_ms = excluded.expires_at_ms
     `).run(platform, modelId, keyId, expiresAtMs);
-  });
+      }));
 }
 
-function clearPersistedCooldown(platform: string, modelId: string, keyId: number) {
-  withDb(db => {
-    db.prepare(`
+async function clearPersistedCooldown(platform: string, modelId: string, keyId: number) {
+  (await withDb(async db => {
+        await db.prepare(`
       DELETE FROM rate_limit_cooldowns
        WHERE platform = ?
          AND model_id = ?
          AND key_id = ?
     `).run(platform, modelId, keyId);
-  });
+      }));
 }
 
-export function setCooldown(platform: string, modelId: string, keyId: number, durationMs = 60_000) {
+export async function setCooldown(platform: string, modelId: string, keyId: number, durationMs = 60_000) {
   const key = `${platform}:${modelId}:${keyId}:cooldown`;
   const expiresAtMs = Date.now() + durationMs;
   cooldowns.set(key, expiresAtMs);
-  persistCooldown(platform, modelId, keyId, expiresAtMs);
+  (await persistCooldown(platform, modelId, keyId, expiresAtMs));
 }
 
-export function isOnCooldown(platform: string, modelId: string, keyId: number): boolean {
+export async function isOnCooldown(platform: string, modelId: string, keyId: number): Promise<boolean> {
   const key = `${platform}:${modelId}:${keyId}:cooldown`;
   const now = Date.now();
-  const persistedExpiry = persistedCooldownExpiry(platform, modelId, keyId);
+  const persistedExpiry = (await persistedCooldownExpiry(platform, modelId, keyId));
   if (persistedExpiry !== undefined && persistedExpiry !== null) {
     if (now > persistedExpiry) {
       cooldowns.delete(key);
-      clearPersistedCooldown(platform, modelId, keyId);
+      (await clearPersistedCooldown(platform, modelId, keyId));
       return false;
     }
     cooldowns.set(key, persistedExpiry);
     return true;
   }
 
-  const expiry = cooldowns.get(key);
+  const expiry = (await cooldowns.get(key));
   if (!expiry) return false;
   if (now > expiry) {
     cooldowns.delete(key);
@@ -407,7 +407,7 @@ export function isOnCooldown(platform: string, modelId: string, keyId: number): 
   return true;
 }
 
-export function getRateLimitStatus(
+export async function getRateLimitStatus(
   platform: string,
   modelId: string,
   keyId: number,
@@ -416,8 +416,8 @@ export function getRateLimitStatus(
   const now = Date.now();
 
   return {
-    rpm: { used: requestCount(platform, modelId, keyId, MINUTE, now), limit: limits.rpm },
-    rpd: { used: requestCount(platform, modelId, keyId, DAY, now), limit: limits.rpd },
-    tpm: { used: tokenCount(platform, modelId, keyId, MINUTE, now), limit: limits.tpm },
+    rpm: { used: (await requestCount(platform, modelId, keyId, MINUTE, now)), limit: limits.rpm },
+    rpd: { used: (await requestCount(platform, modelId, keyId, DAY, now)), limit: limits.rpd },
+    tpm: { used: (await tokenCount(platform, modelId, keyId, MINUTE, now)), limit: limits.tpm },
   };
 }

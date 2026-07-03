@@ -82,7 +82,7 @@ function getSessionKey(messages: ChatMessage[], sessionIdHeader?: string): strin
   return crypto.createHash('sha1').update(text).digest('hex');
 }
 
-export function getStickyModel(messages: ChatMessage[], sessionIdHeader?: string): number | undefined {
+export async function getStickyModel(messages: ChatMessage[], sessionIdHeader?: string): Promise<number | undefined> {
   // Only apply sticky for multi-turn (has assistant messages = continuation)
   const hasAssistant = messages.some(m => m.role === 'assistant');
   if (!hasAssistant) return undefined;
@@ -90,7 +90,7 @@ export function getStickyModel(messages: ChatMessage[], sessionIdHeader?: string
   const key = getSessionKey(messages, sessionIdHeader);
   if (!key) return undefined;
 
-  const entry = stickySessionMap.get(key);
+  const entry = (await stickySessionMap.get(key));
   if (!entry) return undefined;
 
   if (Date.now() - entry.lastUsed > STICKY_TTL_MS) {
@@ -115,16 +115,16 @@ export function setStickyModel(messages: ChatMessage[], modelDbId: number, sessi
 }
 
 // OpenAI-compatible /models endpoint (used by Hermes for metadata)
-proxyRouter.get('/models', (req: Request, res: Response) => {
+(await proxyRouter.get('/models', async (req: Request, res: Response) => {
   const token = extractApiToken(req);
-  const unifiedKey = getUnifiedApiKey();
+  const unifiedKey = (await getUnifiedApiKey());
   if (!token || !timingSafeStringEqual(token, unifiedKey)) {
     res.status(401).json({ error: { message: 'Invalid API key', type: 'authentication_error' } });
     return;
   }
 
   const db = getDb();
-  const models = db.prepare(`
+  const models = await db.prepare(`
     SELECT platform, model_id, display_name, context_window
     FROM (
       SELECT platform, model_id, display_name, context_window, intelligence_rank, id,
@@ -160,7 +160,7 @@ proxyRouter.get('/models', (req: Request, res: Response) => {
       })),
     ],
   });
-});
+}));
 
 const MAX_RETRIES = 20;
 
@@ -366,7 +366,7 @@ const EmbeddingsBody = z.object({
 
 proxyRouter.post('/embeddings', async (req: Request, res: Response) => {
   const token = extractApiToken(req);
-  const unifiedKey = getUnifiedApiKey();
+  const unifiedKey = (await getUnifiedApiKey());
   if (!token || !timingSafeStringEqual(token, unifiedKey)) {
     res.status(401).json({ error: { message: 'Invalid API key', type: 'authentication_error' } });
     return;
@@ -400,7 +400,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // loopback callers. Browser pages can reach localhost, so socket locality is
   // not a reliable authorization boundary.
   const token = extractApiToken(req);
-  const unifiedKey = getUnifiedApiKey();
+  const unifiedKey = (await getUnifiedApiKey());
   if (!token || !timingSafeStringEqual(token, unifiedKey)) {
     res.status(401).json({
       error: { message: 'Invalid API key', type: 'authentication_error' },
@@ -580,14 +580,14 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   let preferredModel: number | undefined;
   if (isAutoModel(requestedModel)) {
     // Explicit "auto" → behave exactly like an omitted model field.
-    preferredModel = getStickyModel(messages, sessionIdHeader);
+    preferredModel = (await getStickyModel(messages, sessionIdHeader));
   } else if (requestedModel) {
     const db = getDb();
-    const enabled = db.prepare('SELECT id FROM models WHERE model_id = ? AND enabled = 1').get(requestedModel) as { id: number } | undefined;
+    const enabled = await db.prepare('SELECT id FROM models WHERE model_id = ? AND enabled = 1').get(requestedModel) as { id: number } | undefined;
     if (enabled) {
       preferredModel = enabled.id;
     } else {
-      const disabled = db.prepare('SELECT id FROM models WHERE model_id = ?').get(requestedModel) as { id: number } | undefined;
+      const disabled = await db.prepare('SELECT id FROM models WHERE model_id = ?').get(requestedModel) as { id: number } | undefined;
       const reason = disabled ? 'is disabled' : 'is not in the catalog';
       res.status(400).json({
         error: {
@@ -599,7 +599,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       return;
     }
   } else {
-    preferredModel = getStickyModel(messages, sessionIdHeader);
+    preferredModel = (await getStickyModel(messages, sessionIdHeader));
   }
 
   // For analytics: the model id the client pinned, null when auto-routed
@@ -614,7 +614,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
-      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, hasImage, wantsTools);
+      route = await routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, hasImage, wantsTools);
     } catch (err: any) {
       // No more models available
       if (lastError) {
@@ -633,7 +633,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       return;
     }
 
-    recordRequest(route.platform, route.modelId, route.keyId);
+    (await recordRequest(route.platform, route.modelId, route.keyId));
 
     try {
       if (stream) {
@@ -709,7 +709,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
               console.error(`[Proxy] In-band error frame from ${route.displayName} mid-stream:`, msg);
               writeChunk({ error: { message: `Provider error (${route.displayName}): ${sanitizeProviderErrorMessage(String(msg))}`, type: 'stream_error' } });
               try { res.write('data: [DONE]\n\n'); res.end(); } catch { /* socket gone */ }
-              logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, `in-band error frame: ${sanitizeProviderErrorMessage(String(msg))}`, ttfbMs, pinnedModelId);
+              (await logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, `in-band error frame: ${sanitizeProviderErrorMessage(String(msg))}`, ttfbMs, pinnedModelId));
               return;
             }
 
@@ -729,7 +729,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
             for (const tc of choice.delta?.tool_calls ?? []) {
               const idx = tc.index ?? 0;
               if (!toolCallAcc.has(idx)) toolCallAcc.set(idx, { id: undefined, name: '', args: '' });
-              const acc = toolCallAcc.get(idx)!;
+              const acc = (await toolCallAcc.get(idx))!;
               if (tc.id && !acc.id) acc.id = tc.id;
               if (tc.function?.name) acc.name += tc.function.name;
               if (tc.function?.arguments) acc.args += tc.function.arguments;
@@ -780,26 +780,26 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           // calls whose args still aren't valid JSON.
           const schemas = toolSchemaMap(tools);
           let syntheticStreamIds = 0;
-          const completedCalls = [...toolCallAcc.entries()]
-            .sort((a, b) => a[0] - b[0])
-            .map(([, acc]) => ({
-              id: acc.id && acc.id.length > 0 ? acc.id : `call_stream_${++syntheticStreamIds}`,
-              type: 'function' as const,
-              function: { name: acc.name, arguments: repairToolArguments(acc.args || '{}', schemas.get(acc.name)) },
-            }))
-            .filter(c => { try { JSON.parse(c.function.arguments); return c.function.name.length > 0; } catch { return false; } });
+          const completedCalls = (await Promise.all([...toolCallAcc.entries()]
+                                .sort((a, b) => a[0] - b[0])
+                                .map(async ([, acc]) => ({
+                                  id: acc.id && acc.id.length > 0 ? acc.id : `call_stream_${++syntheticStreamIds}`,
+                                  type: 'function' as const,
+                                  function: { name: acc.name, arguments: repairToolArguments(acc.args || '{}', (await schemas.get(acc.name))) },
+                                }))))
+                      .filter(c => { try { JSON.parse(c.function.arguments); return c.function.name.length > 0; } catch { return false; } });
 
           // Dialect rescue: the held text is an inline tool call in some
           // model's private syntax. Parse it into structured calls or treat
           // the turn as dead (headers were never sent in dialect mode, so
           // failing over is free).
           if (mode === 'dialect' || (mode === 'undecided' && heldText.length > 0 && containsDialectMarker(heldText))) {
-            const rescue = rescueInlineToolCalls(heldText, new Set((tools ?? []).map(t => t.function.name)));
+            const rescue = (await rescueInlineToolCalls(heldText, new Set((tools ?? []).map(t => t.function.name))));
             if (rescue.detected) {
               if (!rescue.calls) throw new Error(`unparseable inline tool-call dialect from ${route.displayName}: ${heldText.slice(0, 120)}`);
               let rescuedIds = 0;
               for (const c of rescue.calls) {
-                completedCalls.push({ id: `call_rescued_${++rescuedIds}`, type: 'function', function: { name: c.name, arguments: repairToolArguments(c.arguments, schemas.get(c.name)) } });
+                completedCalls.push({ id: `call_rescued_${++rescuedIds}`, type: 'function', function: { name: c.name, arguments: repairToolArguments(c.arguments, (await schemas.get(c.name))) } });
               }
               heldText = rescue.cleanText;
               console.log(`[Proxy] Rescued ${rescuedIds} inline tool call(s) from ${route.displayName} into structured tool_calls`);
@@ -834,10 +834,10 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           res.write('data: [DONE]\n\n');
           res.end();
 
-          recordTokens(route.platform, route.modelId, route.keyId, estimatedInputTokens + totalOutputTokens);
-          recordSuccess(route.modelDbId);
+          (await recordTokens(route.platform, route.modelId, route.keyId, estimatedInputTokens + totalOutputTokens));
+          (await recordSuccess(route.modelDbId));
           setStickyModel(messages, route.modelDbId, sessionIdHeader);
-          logRequest(route.platform, route.modelId, route.keyId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, null, ttfbMs, pinnedModelId);
+          (await logRequest(route.platform, route.modelId, route.keyId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, null, ttfbMs, pinnedModelId));
           return;
         } catch (streamErr: any) {
           if (headerSent) {
@@ -847,7 +847,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
             const payload = { error: { message: `Provider error (${route.displayName}): stream interrupted`, type: 'stream_error' } };
             try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* socket gone */ }
             try { res.write('data: [DONE]\n\n'); res.end(); } catch { /* socket gone */ }
-            logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, sanitizeProviderErrorMessage(streamErr.message), null, pinnedModelId);
+            (await logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, sanitizeProviderErrorMessage(streamErr.message), null, pinnedModelId));
             return;
           }
           // Headers never sent — bubble to the outer retry handler, which
@@ -868,10 +868,10 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         const respMsg = result.choices?.[0]?.message;
         const respText = contentToString(respMsg?.content ?? '');
         if (!respText && (respMsg?.tool_calls?.length ?? 0) === 0) {
-          logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, Date.now() - start, 'empty completion (no content, no tool_calls)', null, pinnedModelId);
+          (await logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, Date.now() - start, 'empty completion (no content, no tool_calls)', null, pinnedModelId));
           skipKeys.add(`${route.platform}:${route.modelId}:${route.keyId}`);
-          setCooldown(route.platform, route.modelId, route.keyId, getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }));
-          recordRateLimitHit(route.modelDbId);
+          (await setCooldown(route.platform, route.modelId, route.keyId, (await getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, { rpd: route.rpdLimit, tpd: route.tpdLimit }))));
+          (await recordRateLimitHit(route.modelDbId));
           lastError = new Error(`empty completion from ${route.displayName}`);
           continue;
         }
@@ -883,17 +883,17 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         // the client's agent loop keeps working; a detected-but-unparseable
         // dialect is a dead turn and fails over like an empty completion.
         if (wantsTools && respMsg && (respMsg.tool_calls?.length ?? 0) === 0 && respText) {
-          const rescue = rescueInlineToolCalls(respText, new Set((tools ?? []).map(t => t.function.name)));
+          const rescue = (await rescueInlineToolCalls(respText, new Set((tools ?? []).map(t => t.function.name))));
           if (rescue.detected) {
             if (!rescue.calls) {
               throw new Error(`unparseable inline tool-call dialect from ${route.displayName}: ${respText.slice(0, 120)}`);
             }
             const schemas = toolSchemaMap(tools);
-            respMsg.tool_calls = rescue.calls.map((c, i) => ({
-              id: `call_rescued_${i + 1}`,
-              type: 'function' as const,
-              function: { name: c.name, arguments: repairToolArguments(c.arguments, schemas.get(c.name)) },
-            }));
+            respMsg.tool_calls = await Promise.all(rescue.calls.map(async (c, i) => ({
+                          id: `call_rescued_${i + 1}`,
+                          type: 'function' as const,
+                          function: { name: c.name, arguments: repairToolArguments(c.arguments, (await schemas.get(c.name))) },
+                        })));
             respMsg.content = rescue.cleanText.length > 0 ? rescue.cleanText : null;
             if (result.choices?.[0]) result.choices[0].finish_reason = 'tool_calls';
             console.log(`[Proxy] Rescued ${rescue.calls.length} inline tool call(s) from ${route.displayName} into structured tool_calls`);
@@ -901,8 +901,8 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         }
 
         const totalTokens = result.usage?.total_tokens ?? 0;
-        recordTokens(route.platform, route.modelId, route.keyId, totalTokens);
-        recordSuccess(route.modelDbId);
+        (await recordTokens(route.platform, route.modelId, route.keyId, totalTokens));
+        (await recordSuccess(route.modelDbId));
         setStickyModel(messages, route.modelDbId, sessionIdHeader);
 
         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
@@ -915,42 +915,42 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           const schemas = toolSchemaMap(tools);
           for (const tc of respMsg.tool_calls) {
             if (tc?.function?.arguments != null) {
-              tc.function.arguments = repairToolArguments(tc.function.arguments, schemas.get(tc.function.name));
+              tc.function.arguments = repairToolArguments(tc.function.arguments, (await schemas.get(tc.function.name)));
             }
           }
         }
         // Normalize array-shaped message.content to a string on the way out (#166).
         res.json(normalizeOutboundContent(result));
 
-        logRequest(
-          route.platform, route.modelId, route.keyId, 'success',
-          result.usage?.prompt_tokens ?? 0,
-          result.usage?.completion_tokens ?? 0,
-          Date.now() - start, null, null, pinnedModelId,
-        );
+        (await logRequest(
+                    route.platform, route.modelId, route.keyId, 'success',
+                    result.usage?.prompt_tokens ?? 0,
+                    result.usage?.completion_tokens ?? 0,
+                    Date.now() - start, null, null, pinnedModelId,
+                  ));
         return;
       }
     } catch (err: any) {
       const latency = Date.now() - start;
       const safeError = sanitizeProviderErrorMessage(err.message);
-      logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, latency, safeError, null, pinnedModelId);
+      (await logRequest(route.platform, route.modelId, route.keyId, 'error', estimatedInputTokens, 0, latency, safeError, null, pinnedModelId));
 
       if (isRetryableError(err)) {
         // Put this model+key on cooldown and try the next one
         const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
         skipKeys.add(skipId);
-        setCooldown(
-          route.platform,
-          route.modelId,
-          route.keyId,
-          isPaymentRequiredError(err)
-            ? PAYMENT_REQUIRED_COOLDOWN_MS
-            : getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, {
-                rpd: route.rpdLimit,
-                tpd: route.tpdLimit,
-              }),
-        );
-        recordRateLimitHit(route.modelDbId);
+        (await setCooldown(
+                    route.platform,
+                    route.modelId,
+                    route.keyId,
+                    isPaymentRequiredError(err)
+                      ? PAYMENT_REQUIRED_COOLDOWN_MS
+                      : (await getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, {
+                                        rpd: route.rpdLimit,
+                                        tpd: route.tpdLimit,
+                                      })),
+                  ));
+        (await recordRateLimitHit(route.modelDbId));
         lastError = err;
         console.log(`[Proxy] ${safeError.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${MAX_RETRIES})`);
         continue;
@@ -976,7 +976,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   });
 });
 
-export function logRequest(
+export async function logRequest(
   platform: string,
   modelId: string,
   keyId: number,
@@ -993,11 +993,11 @@ export function logRequest(
 ) {
   try {
     const db = getDb();
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO requests (platform, model_id, key_id, status, input_tokens, output_tokens, latency_ms, error, ttfb_ms, requested_model)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(platform, modelId, keyId, status, inputTokens, outputTokens, latencyMs, error, ttfbMs, requestedModel);
-    pruneRequestAnalytics({ db });
+    (await pruneRequestAnalytics({ db }));
   } catch (e) {
     console.error('Failed to log request:', e);
   }

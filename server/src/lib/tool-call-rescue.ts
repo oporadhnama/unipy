@@ -122,7 +122,7 @@ function callFromNamedJson(json: string, toolNames: Set<string>): RescuedToolCal
 }
 
 /** Dialect 1: Kimi/DeepSeek <|tool_call_begin|> token blocks. */
-function parseTokenDialect(text: string, toolNames: Set<string>): { calls: RescuedToolCall[] | null; cleanText: string } {
+async function parseTokenDialect(text: string, toolNames: Set<string>): Promise<{ calls: RescuedToolCall[] | null; cleanText: string }> {
   const calls: RescuedToolCall[] = [];
   let clean = text;
   // Strip section wrappers first; they carry no information.
@@ -132,7 +132,7 @@ function parseTokenDialect(text: string, toolNames: Set<string>): { calls: Rescu
   let m: RegExpExecArray | null;
   let parsedAll = true;
   const spans: Array<{ from: number; to: number }> = [];
-  while ((m = callRe.exec(clean)) !== null) {
+  while ((m = (await callRe.exec(clean))) !== null) {
     const idToken = m[1].trim();
     const argStart = m.index + m[0].length;
     const jsonStart = clean.indexOf('{', argStart);
@@ -140,7 +140,7 @@ function parseTokenDialect(text: string, toolNames: Set<string>): { calls: Rescu
     // Function name rides in the id token as `functions.NAME:IDX`. Some
     // models degrade it to an opaque id (observed: `chatcmpl-tool-<hex>`),
     // which leaves no way to know WHICH tool was meant — unparseable.
-    const nameMatch = /^functions\.([A-Za-z0-9_.-]+):\d+$/.exec(idToken);
+    const nameMatch = (await /^functions\.([A-Za-z0-9_.-]+):\d+$/.exec(idToken));
     const name = nameMatch?.[1];
     let argsOk = false;
     if (extracted && name && isKnownTool(name, toolNames)) {
@@ -156,14 +156,14 @@ function parseTokenDialect(text: string, toolNames: Set<string>): { calls: Rescu
 }
 
 /** Dialect 2: <function=NAME{...}</function> (with or without a '>' after the name). */
-function parseFunctionTagDialect(text: string, toolNames: Set<string>): { calls: RescuedToolCall[] | null; cleanText: string } {
+async function parseFunctionTagDialect(text: string, toolNames: Set<string>): Promise<{ calls: RescuedToolCall[] | null; cleanText: string }> {
   const calls: RescuedToolCall[] = [];
   let clean = text;
   let parsedAll = true;
   const headRe = /<function=([A-Za-z0-9_.-]+)\s*>?\s*/g;
   let m: RegExpExecArray | null;
   const spans: Array<{ from: number; to: number }> = [];
-  while ((m = headRe.exec(text)) !== null) {
+  while ((m = (await headRe.exec(text))) !== null) {
     const name = m[1];
     const afterHead = m.index + m[0].length;
     const jsonStart = text[afterHead] === '{' || text[afterHead] === '['
@@ -184,14 +184,14 @@ function parseFunctionTagDialect(text: string, toolNames: Set<string>): { calls:
 }
 
 /** Dialect 3: <tool_call>{...}</tool_call> XML-JSON blocks. */
-function parseXmlDialect(text: string, toolNames: Set<string>): { calls: RescuedToolCall[] | null; cleanText: string } {
+async function parseXmlDialect(text: string, toolNames: Set<string>): Promise<{ calls: RescuedToolCall[] | null; cleanText: string }> {
   const calls: RescuedToolCall[] = [];
   let parsedAll = true;
   const re = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
   let m: RegExpExecArray | null;
   let clean = text;
   const matches: string[] = [];
-  while ((m = re.exec(text)) !== null) matches.push(m[1]);
+  while ((m = (await re.exec(text))) !== null) matches.push(m[1]);
   for (const inner of matches) {
     const call = callFromNamedJson(inner, toolNames);
     if (call) calls.push(call);
@@ -211,26 +211,26 @@ function parseXmlDialect(text: string, toolNames: Set<string>): { calls: Rescued
  *                   calls must match one (empty set = accept any name,
  *                   used by tests only)
  */
-export function rescueInlineToolCalls(text: string, toolNames: Set<string>): RescueResult {
+export async function rescueInlineToolCalls(text: string, toolNames: Set<string>): Promise<RescueResult> {
   if (!text) return { detected: false, calls: null, cleanText: text };
 
   if (text.includes('<|tool_call_begin|>') || text.includes('<|tool_calls_section_begin|>')) {
-    const { calls, cleanText } = parseTokenDialect(text, toolNames);
+    const { calls, cleanText } = (await parseTokenDialect(text, toolNames));
     return { detected: true, calls, cleanText };
   }
   if (text.includes('<function=')) {
-    const { calls, cleanText } = parseFunctionTagDialect(text, toolNames);
+    const { calls, cleanText } = (await parseFunctionTagDialect(text, toolNames));
     return { detected: true, calls, cleanText };
   }
   if (text.includes('<tool_call>')) {
-    const { calls, cleanText } = parseXmlDialect(text, toolNames);
+    const { calls, cleanText } = (await parseXmlDialect(text, toolNames));
     return { detected: true, calls, cleanText };
   }
 
   // Dialect 4: the entire answer is one JSON object naming a known tool —
   // either bare or inside a ```json fence. Strictly schema-gated.
   const trimmed = text.trim();
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed);
+  const fenced = (await /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed));
   const candidate = (fenced ? fenced[1] : trimmed).trim();
   if (candidate.startsWith('{') && candidate.endsWith('}')) {
     const call = callFromNamedJson(candidate, toolNames);

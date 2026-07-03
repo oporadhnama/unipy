@@ -1,75 +1,67 @@
 import crypto from 'crypto';
-import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { initEncryptionKey } from '../lib/crypto.js';
 import { applyModelPricing } from './model-pricing.js';
+import { PgDatabase, PgStatement } from './pg-wrapper.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.resolve(__dirname, '../../data/freeapi.db');
 
-let db: Database.Database;
+let db: PgDatabase;
 
-export function getDb(): Database.Database {
+export function getDb(): PgDatabase {
   if (!db) {
     throw new Error('Database not initialized. Call initDb() first.');
   }
   return db;
 }
 
-export function initDb(dbPath?: string): Database.Database {
-  const resolvedPath = dbPath ?? DB_PATH;
-  const isMemory = resolvedPath === ':memory:';
-
-  if (!isMemory) {
-    const dataDir = path.dirname(resolvedPath);
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
+export async function initDb(): Promise<PgDatabase> {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error('DATABASE_URL environment variable is required for Postgres connection.');
   }
 
-  db = new Database(resolvedPath);
-  if (!isMemory) db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+  db = new PgDatabase(connectionString);
 
-  createTables(db);
-  initEncryptionKey(db);
-  seedModels(db);
-  migrateModels(db);
-  migrateModelsV2(db);
-  migrateModelsV3Ranks(db);
-  migrateModelsV4(db);
-  migrateModelsV5(db);
-  migrateModelsV6(db);
-  migrateModelsV7(db);
-  migrateModelsV8(db);
-  migrateModelsV9(db);
-  migrateModelsV10(db);
-  migrateModelsV11(db);
-  migrateModelsV12(db);
-  migrateModelsV13(db);
-  migrateModelsV14(db);
-  migrateModelsV15(db);
-  migrateModelsV16Vision(db);
-  migrateModelsV17IntelligenceTiers(db);
-  migrateModelsV18OpenCodeZen(db);
-  migrateModelsV19Gemma4(db);
-  migrateModelsV20KiloFree(db);
-  migrateModelsV21PruneDead(db);
-  migrateModelsV22Tools(db);
+  await createTables(db);
+  await initEncryptionKey(db);
+  await seedModels(db);
+  await migrateModels(db);
+  await migrateModelsV2(db);
+  await migrateModelsV3Ranks(db);
+  await migrateModelsV4(db);
+  await migrateModelsV5(db);
+  await migrateModelsV6(db);
+  await migrateModelsV7(db);
+  await migrateModelsV8(db);
+  await migrateModelsV9(db);
+  await migrateModelsV10(db);
+  await migrateModelsV11(db);
+  await migrateModelsV12(db);
+  await migrateModelsV13(db);
+  await migrateModelsV14(db);
+  await migrateModelsV15(db);
+  await migrateModelsV16Vision(db);
+  await migrateModelsV17IntelligenceTiers(db);
+  await migrateModelsV18OpenCodeZen(db);
+  await migrateModelsV19Gemma4(db);
+  await migrateModelsV20KiloFree(db);
+  await migrateModelsV21PruneDead(db);
+  await migrateModelsV22Tools(db);
   // After all model migrations: add/refresh paid-equivalent pricing
   // (drives the realistic "Est. savings" analytics stat).
-  applyModelPricing(db);
-  migrateEmbeddingsV1(db);
-  ensureUnifiedKey(db);
+  await applyModelPricing(db);
+  await migrateEmbeddingsV1(db);
+  await ensureUnifiedKey(db);
 
-  console.log(`Database initialized at ${resolvedPath}`);
+  console.log(`Database initialized using PostgreSQL`);
   return db;
 }
 
-function createTables(db: Database.Database) {
-  db.exec(`
+async function createTables(db: PgDatabase) {
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS models (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       platform TEXT NOT NULL,
@@ -171,61 +163,61 @@ function createTables(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_api_keys_platform ON api_keys(platform);
   `);
 
-  ensureRequestKeyIdColumn(db);
-  ensureApiKeysBaseUrlColumn(db);
-  ensureModelsKeyIdColumn(db);
-  ensureRequestTtfbColumn(db);
-  ensureRequestRequestedModelColumn(db);
+  (await ensureRequestKeyIdColumn(db));
+  (await ensureApiKeysBaseUrlColumn(db));
+  (await ensureModelsKeyIdColumn(db));
+  (await ensureRequestTtfbColumn(db));
+  (await ensureRequestRequestedModelColumn(db));
 }
 
 // `requested_model` is the model id the CLIENT pinned in the request body.
 // NULL when the request was auto-routed ('auto' or omitted model field).
 // requested_model = model_id means the pin was honored; a different model_id
 // means rate limits or failures forced a failover to another model.
-function ensureRequestRequestedModelColumn(db: Database.Database) {
-  const columns = db.prepare('PRAGMA table_info(requests)').all() as { name: string }[];
+async function ensureRequestRequestedModelColumn(db: PgDatabase) {
+  const columns = await db.prepare('PRAGMA table_info(requests)').all() as { name: string }[];
   if (!columns.some(col => col.name === 'requested_model')) {
-    db.prepare('ALTER TABLE requests ADD COLUMN requested_model TEXT').run();
+    await db.prepare('ALTER TABLE requests ADD COLUMN requested_model TEXT').run();
   }
 }
 
 // `ttfb_ms` is the time-to-first-byte for streaming responses (ms from dispatch
 // to the first chunk). NULL for non-streaming or pre-existing rows. Feeds the
 // bandit router's latency axis (server/src/services/scoring.ts).
-function ensureRequestTtfbColumn(db: Database.Database) {
-  const columns = db.prepare('PRAGMA table_info(requests)').all() as { name: string }[];
+async function ensureRequestTtfbColumn(db: PgDatabase) {
+  const columns = await db.prepare('PRAGMA table_info(requests)').all() as { name: string }[];
   if (!columns.some(col => col.name === 'ttfb_ms')) {
-    db.prepare('ALTER TABLE requests ADD COLUMN ttfb_ms INTEGER').run();
+    await db.prepare('ALTER TABLE requests ADD COLUMN ttfb_ms INTEGER').run();
   }
 }
 
-function ensureRequestKeyIdColumn(db: Database.Database) {
-  const columns = db.prepare('PRAGMA table_info(requests)').all() as { name: string }[];
+async function ensureRequestKeyIdColumn(db: PgDatabase) {
+  const columns = await db.prepare('PRAGMA table_info(requests)').all() as { name: string }[];
   if (!columns.some(col => col.name === 'key_id')) {
-    db.prepare('ALTER TABLE requests ADD COLUMN key_id INTEGER').run();
+    await db.prepare('ALTER TABLE requests ADD COLUMN key_id INTEGER').run();
   }
-  db.prepare('CREATE INDEX IF NOT EXISTS idx_requests_key_id ON requests(key_id)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_requests_key_id ON requests(key_id)').run();
 }
 
 // `base_url` is the upstream endpoint for the user-configured 'custom' provider
 // (#117). NULL for every built-in platform — they use their hardcoded base URL.
-function ensureApiKeysBaseUrlColumn(db: Database.Database) {
-  const columns = db.prepare('PRAGMA table_info(api_keys)').all() as { name: string }[];
+async function ensureApiKeysBaseUrlColumn(db: PgDatabase) {
+  const columns = await db.prepare('PRAGMA table_info(api_keys)').all() as { name: string }[];
   if (!columns.some(col => col.name === 'base_url')) {
-    db.prepare('ALTER TABLE api_keys ADD COLUMN base_url TEXT').run();
+    await db.prepare('ALTER TABLE api_keys ADD COLUMN base_url TEXT').run();
   }
 }
 
 // `key_id` binds a custom model to the api_keys row that carries ITS endpoint,
 // so several custom providers can coexist (#212). NULL for built-in platforms
 // (any key of the platform serves any of its models).
-function ensureModelsKeyIdColumn(db: Database.Database) {
-  const columns = db.prepare('PRAGMA table_info(models)').all() as { name: string }[];
+async function ensureModelsKeyIdColumn(db: PgDatabase) {
+  const columns = await db.prepare('PRAGMA table_info(models)').all() as { name: string }[];
   if (!columns.some(col => col.name === 'key_id')) {
-    db.prepare('ALTER TABLE models ADD COLUMN key_id INTEGER').run();
+    await db.prepare('ALTER TABLE models ADD COLUMN key_id INTEGER').run();
     // Backfill: bind pre-existing custom models to the (single) legacy custom
     // endpoint key so they keep routing to the URL they were created for.
-    db.prepare(`
+    await db.prepare(`
       UPDATE models
          SET key_id = (SELECT id FROM api_keys WHERE platform = 'custom' ORDER BY id LIMIT 1)
        WHERE platform = 'custom' AND key_id IS NULL
@@ -233,8 +225,8 @@ function ensureModelsKeyIdColumn(db: Database.Database) {
   }
 }
 
-function seedModels(db: Database.Database) {
-  const count = db.prepare('SELECT COUNT(*) as cnt FROM models').get() as { cnt: number };
+async function seedModels(db: PgDatabase) {
+  const count = await db.prepare('SELECT COUNT(*) as cnt FROM models').get() as { cnt: number };
   if (count.cnt > 0) return;
 
   const insert = db.prepare(`
@@ -282,19 +274,19 @@ function seedModels(db: Database.Database) {
     ['minimax', 'MiniMax-M1', 'MiniMax M1', 5, 8, 'Large', 20, null, 1000000, null, '~30M', 200000],
   ];
 
-  const insertMany = db.transaction(() => {
+  const insertMany = db.transaction(async () => {
     for (const m of models) {
-      insert.run(...m);
+      (await insert.run(...m));
     }
   });
   insertMany();
 
   // Seed default fallback config from models
-  const allModels = db.prepare('SELECT id, intelligence_rank FROM models ORDER BY intelligence_rank ASC').all() as { id: number; intelligence_rank: number }[];
+  const allModels = await db.prepare('SELECT id, intelligence_rank FROM models ORDER BY intelligence_rank ASC').all() as { id: number; intelligence_rank: number }[];
   const insertFallback = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
-  const insertFallbacks = db.transaction(() => {
+  const insertFallbacks = db.transaction(async () => {
     for (let i = 0; i < allModels.length; i++) {
-      insertFallback.run(allModels[i].id, i + 1);
+      (await insertFallback.run(allModels[i].id, i + 1));
     }
   });
   insertFallbacks();
@@ -308,7 +300,7 @@ function seedModels(db: Database.Database) {
  * corrects stale rate-limits / monthly budgets, adds new smarter models
  * and three new providers (Zhipu, Moonshot, MiniMax).
  */
-function migrateModels(db: Database.Database) {
+async function migrateModels(db: PgDatabase) {
   // 1) Replace outdated models in-place (preserves fallback_config & any references)
   const renames: Array<[string, string, string, string, number, string, number | null, number | null, number]> = [
     // platform, oldModelId, newModelId, newDisplayName, intelligenceRank, monthlyBudget, rpdLimit, contextWindow, sizeLabelPriority(unused)
@@ -322,18 +314,18 @@ function migrateModels(db: Database.Database) {
      WHERE platform = ? AND model_id = ?
   `);
   // DeepSeek R1 (free) -> DeepSeek V3.1 (free)
-  renameStmt.run('deepseek/deepseek-v3.1:free', 'DeepSeek V3.1 (free)', 2, '~6M', 200, 131072, 'Frontier', 'openrouter', 'deepseek/deepseek-r1:free');
+  (await renameStmt.run('deepseek/deepseek-v3.1:free', 'DeepSeek V3.1 (free)', 2, '~6M', 200, 131072, 'Frontier', 'openrouter', 'deepseek/deepseek-r1:free'));
   // GitHub GPT-4o -> GPT-5
-  renameStmt.run('openai/gpt-5', 'GPT-5 (GitHub)', 1, '~18M', null, 128000, 'Frontier', 'github', 'gpt-4o');
+  (await renameStmt.run('openai/gpt-5', 'GPT-5 (GitHub)', 1, '~18M', null, 128000, 'Frontier', 'github', 'gpt-4o'));
 
   // 2) Correct stale limits / budgets on existing rows
-  db.prepare(`UPDATE models SET rpd_limit = 20, monthly_token_budget = '~3M' WHERE platform = 'google' AND model_id = 'gemini-2.5-flash'`).run();
-  db.prepare(`UPDATE models SET rpm_limit = 20 WHERE platform = 'sambanova' AND model_id = 'Meta-Llama-3.3-70B-Instruct'`).run();
-  db.prepare(`UPDATE models SET tpm_limit = 6000 WHERE platform = 'groq' AND model_id = 'llama-4-scout-17b-16e-instruct'`).run();
-  db.prepare(`UPDATE models SET monthly_token_budget = '~1-2M' WHERE platform = 'cohere' AND model_id = 'command-r-plus-08-2024'`).run();
-  db.prepare(`UPDATE models SET monthly_token_budget = '~1-3M' WHERE platform = 'huggingface' AND model_id = 'accounts/fireworks/models/llama-v3p3-70b-instruct'`).run();
+  await db.prepare(`UPDATE models SET rpd_limit = 20, monthly_token_budget = '~3M' WHERE platform = 'google' AND model_id = 'gemini-2.5-flash'`).run();
+  await db.prepare(`UPDATE models SET rpm_limit = 20 WHERE platform = 'sambanova' AND model_id = 'Meta-Llama-3.3-70B-Instruct'`).run();
+  await db.prepare(`UPDATE models SET tpm_limit = 6000 WHERE platform = 'groq' AND model_id = 'llama-4-scout-17b-16e-instruct'`).run();
+  await db.prepare(`UPDATE models SET monthly_token_budget = '~1-2M' WHERE platform = 'cohere' AND model_id = 'command-r-plus-08-2024'`).run();
+  await db.prepare(`UPDATE models SET monthly_token_budget = '~1-3M' WHERE platform = 'huggingface' AND model_id = 'accounts/fireworks/models/llama-v3p3-70b-instruct'`).run();
   // NVIDIA moved to credit model — disable and label accordingly
-  db.prepare(`UPDATE models SET monthly_token_budget = 'credits-based', enabled = 0 WHERE platform = 'nvidia' AND model_id = 'meta/llama-3.1-70b-instruct'`).run();
+  await db.prepare(`UPDATE models SET monthly_token_budget = 'credits-based', enabled = 0 WHERE platform = 'nvidia' AND model_id = 'meta/llama-3.1-70b-instruct'`).run();
 
   // 3) Insert new models (UNIQUE(platform, model_id) makes this idempotent)
   const insert = db.prepare(`
@@ -360,21 +352,21 @@ function migrateModels(db: Database.Database) {
     ['minimax', 'MiniMax-M1', 'MiniMax M1', 5, 8, 'Large', 20, null, 1000000, null, '~30M', 200000],
   ];
 
-  const apply = db.transaction(() => {
-    for (const m of newModels) insert.run(...m);
+  const apply = db.transaction(async () => {
+    for (const m of newModels) (await insert.run(...m));
 
     // Ensure every model has a fallback_config row (new inserts + any orphans)
-    const missing = db.prepare(`
+    const missing = await db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
       WHERE f.id IS NULL
       ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
-      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const maxPriority = (await db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
       const addFallback = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
       for (let i = 0; i < missing.length; i++) {
-        addFallback.run(missing[i].id, maxPriority + i + 1);
+        (await addFallback.run(missing[i].id, maxPriority + i + 1));
       }
     }
   });
@@ -387,7 +379,7 @@ function migrateModels(db: Database.Database) {
  * the current free tier, and adds real :free OpenRouter models found in the
  * live catalog (April 2026).
  */
-function migrateModelsV2(db: Database.Database) {
+async function migrateModelsV2(db: PgDatabase) {
   // Helper: delete a model and its fallback_config entry (FK is RESTRICT-by-default)
   const deleteModel = db.prepare(`DELETE FROM models WHERE platform = ? AND model_id = ?`);
   const deleteFallback = db.prepare(`
@@ -406,17 +398,17 @@ function migrateModelsV2(db: Database.Database) {
     ['openrouter', 'deepseek/deepseek-v3.1:free'],
     ['openrouter', 'moonshotai/kimi-k2:free'],
   ];
-  const applyRemovals = db.transaction(() => {
+  const applyRemovals = db.transaction(async () => {
     for (const [p, m] of removals) {
-      deleteFallback.run(p, m);
-      deleteModel.run(p, m);
+      (await deleteFallback.run(p, m));
+      (await deleteModel.run(p, m));
     }
   });
   applyRemovals();
 
   // GitHub: gpt-5 is in the model catalog but returns "unavailable_model" on free tier
   // inference. Revert to gpt-4o which works. This only runs if the gpt-5 row exists.
-  db.prepare(`
+  await db.prepare(`
     UPDATE models
        SET model_id = 'gpt-4o', display_name = 'GPT-4o', intelligence_rank = 5,
            size_label = 'Large', context_window = 8000, monthly_token_budget = '~18M'
@@ -424,7 +416,7 @@ function migrateModelsV2(db: Database.Database) {
   `).run();
 
   // Groq: scout requires the meta-llama/ publisher prefix
-  db.prepare(`
+  await db.prepare(`
     UPDATE models SET model_id = 'meta-llama/llama-4-scout-17b-16e-instruct'
      WHERE platform = 'groq' AND model_id = 'llama-4-scout-17b-16e-instruct'
   `).run();
@@ -441,18 +433,18 @@ function migrateModelsV2(db: Database.Database) {
     ['openrouter', 'minimax/minimax-m2.5:free', 'MiniMax M2.5 (free)', 3, 9, 'Large', 20, 200, null, null, '~6M', 196608],
     ['openrouter', 'google/gemma-4-31b-it:free', 'Gemma 4 31B (free)', 5, 9, 'Medium', 20, 200, null, null, '~6M', 262144],
   ];
-  const applyAdditions = db.transaction(() => {
-    for (const a of additions) insert.run(...a);
+  const applyAdditions = db.transaction(async () => {
+    for (const a of additions) (await insert.run(...a));
     // Fallback entries for new models
-    const missing = db.prepare(`
+    const missing = await db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
       WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
-      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const maxPriority = (await db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
       const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
-      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+      for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
   applyAdditions();
@@ -463,7 +455,7 @@ function migrateModelsV2(db: Database.Database) {
  * SWE-bench Verified, Terminal-Bench 2, TAU-Bench, Aider Polyglot.
  * Higher rank = weaker. Ties are allowed (same weights across providers).
  */
-function migrateModelsV3Ranks(db: Database.Database) {
+function migrateModelsV3Ranks(db: PgDatabase) {
   const setRank = db.prepare(`UPDATE models SET intelligence_rank = ? WHERE platform = ? AND model_id = ?`);
   const ranks: Array<[number, string, string]> = [
     // #1-10 frontier coders / agents
@@ -498,9 +490,9 @@ function migrateModelsV3Ranks(db: Database.Database) {
     [22, 'cloudflare',  '@cf/meta/llama-3.1-70b-instruct'],               // same base weights
     [23, 'cohere',      'command-r-plus-08-2024'],                        // RAG-focused, weakest on code
   ];
-  const apply = db.transaction(() => {
+  const apply = db.transaction(async () => {
     for (const [rank, platform, modelId] of ranks) {
-      setRank.run(rank, platform, modelId);
+      (await setRank.run(rank, platform, modelId));
     }
   });
   apply();
@@ -518,7 +510,7 @@ function migrateModelsV3Ranks(db: Database.Database) {
  * (no structured tools), OR/gemma-4 (weak at tools). Renames CF llama-3.1 → 3.3
  * fp8-fast. Corrects stale limits.
  */
-function migrateModelsV4(db: Database.Database) {
+async function migrateModelsV4(db: PgDatabase) {
   // 1) Remove entries that are unavailable or fail agentic tool use
   const deleteModel = db.prepare(`DELETE FROM models WHERE platform = ? AND model_id = ?`);
   const deleteFallback = db.prepare(`
@@ -532,16 +524,16 @@ function migrateModelsV4(db: Database.Database) {
     ['openrouter', 'google/gemma-4-31b-it:free'],                           // weak at tool use
     ['huggingface', 'accounts/fireworks/models/llama-v3p3-70b-instruct'],  // emits tool call as text content, not structured
   ];
-  const applyRemovals = db.transaction(() => {
+  const applyRemovals = db.transaction(async () => {
     for (const [p, m] of removals) {
-      deleteFallback.run(p, m);
-      deleteModel.run(p, m);
+      (await deleteFallback.run(p, m));
+      (await deleteModel.run(p, m));
     }
   });
   applyRemovals();
 
   // 2) Cloudflare: replace Llama 3.1 70B with the current-gen 3.3 70B fp8-fast
-  db.prepare(`
+  await db.prepare(`
     UPDATE models
        SET model_id = '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
            display_name = 'Llama 3.3 70B fp8-fast (CF)',
@@ -550,13 +542,13 @@ function migrateModelsV4(db: Database.Database) {
   `).run();
 
   // 3) Field corrections verified via primary sources + live probe
-  db.prepare(`UPDATE models SET tpm_limit = 12000 WHERE platform = 'groq' AND model_id = 'llama-3.3-70b-versatile'`).run();
-  db.prepare(`UPDATE models SET rpd_limit = 20 WHERE platform = 'sambanova' AND model_id = 'Meta-Llama-3.3-70B-Instruct'`).run();
-  db.prepare(`UPDATE models SET rpd_limit = 14400 WHERE platform = 'cerebras' AND model_id = 'qwen-3-235b-a22b-instruct-2507'`).run();
-  db.prepare(`UPDATE models SET rpd_limit = 250, monthly_token_budget = '~25M' WHERE platform = 'google' AND model_id = 'gemini-2.5-flash'`).run();
+  await db.prepare(`UPDATE models SET tpm_limit = 12000 WHERE platform = 'groq' AND model_id = 'llama-3.3-70b-versatile'`).run();
+  await db.prepare(`UPDATE models SET rpd_limit = 20 WHERE platform = 'sambanova' AND model_id = 'Meta-Llama-3.3-70B-Instruct'`).run();
+  await db.prepare(`UPDATE models SET rpd_limit = 14400 WHERE platform = 'cerebras' AND model_id = 'qwen-3-235b-a22b-instruct-2507'`).run();
+  await db.prepare(`UPDATE models SET rpd_limit = 250, monthly_token_budget = '~25M' WHERE platform = 'google' AND model_id = 'gemini-2.5-flash'`).run();
   // gemini-2.5-pro is at-risk: April 2026 Google moved Pro-class off free tier in practice.
   // Our live probe hit "quota exceeded" immediately. Cut rpd in half to reduce 429 blast radius.
-  db.prepare(`UPDATE models SET rpd_limit = 50, monthly_token_budget = '~6M' WHERE platform = 'google' AND model_id = 'gemini-2.5-pro'`).run();
+  await db.prepare(`UPDATE models SET rpd_limit = 50, monthly_token_budget = '~6M' WHERE platform = 'google' AND model_id = 'gemini-2.5-pro'`).run();
 
   // 4) Add live-probed, tool-capable models
   const insert = db.prepare(`
@@ -600,17 +592,17 @@ function migrateModelsV4(db: Database.Database) {
     ['cloudflare', '@cf/meta/llama-4-scout-17b-16e-instruct', 'Llama 4 Scout (CF)',            12, 11, 'Large',    null, null, null, null, '~18-45M', 131072],
   ];
 
-  const apply = db.transaction(() => {
-    for (const a of additions) insert.run(...a);
-    const missing = db.prepare(`
+  const apply = db.transaction(async () => {
+    for (const a of additions) (await insert.run(...a));
+    const missing = await db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
       WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
-      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const maxPriority = (await db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
       const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
-      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+      for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
   apply();
@@ -661,8 +653,8 @@ function migrateModelsV4(db: Database.Database) {
     [27, 'cohere',      'command-r-plus-08-2024'],
     [28, 'groq',        'llama-3.1-8b-instant'],
   ];
-  const applyRanks = db.transaction(() => {
-    for (const [r, p, m] of ranks) setRank.run(r, p, m);
+  const applyRanks = db.transaction(async () => {
+    for (const [r, p, m] of ranks) (await setRank.run(r, p, m));
   });
   applyRanks();
 }
@@ -673,24 +665,24 @@ function migrateModelsV4(db: Database.Database) {
  * free tier but throttled to 10 RPM / 100 RPD due to high demand; context capped
  * at 8192 on free tier).
  */
-function migrateModelsV5(db: Database.Database) {
-  db.prepare(`UPDATE models SET enabled = 0 WHERE platform = 'google' AND model_id = 'gemini-2.5-pro'`).run();
+async function migrateModelsV5(db: PgDatabase) {
+  await db.prepare(`UPDATE models SET enabled = 0 WHERE platform = 'google' AND model_id = 'gemini-2.5-pro'`).run();
 
   const insert = db.prepare(`
     INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const apply = db.transaction(() => {
-    insert.run('cerebras', 'zai-glm-4.7', 'GLM-4.7 (Cerebras)', 7, 1, 'Frontier', 10, 100, null, null, '~3M', 8192);
-    const missing = db.prepare(`
+  const apply = db.transaction(async () => {
+    (await insert.run('cerebras', 'zai-glm-4.7', 'GLM-4.7 (Cerebras)', 7, 1, 'Frontier', 10, 100, null, null, '~3M', 8192));
+    const missing = await db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
       WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
-      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const maxPriority = (await db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
       const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
-      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+      for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
   apply();
@@ -714,7 +706,7 @@ function migrateModelsV5(db: Database.Database) {
  *     against the same 20 RPD pool, confirming free-tier eligibility)
  *   - 2 OpenRouter :free models with no expiration_date
  */
-function migrateModelsV6(db: Database.Database) {
+async function migrateModelsV6(db: PgDatabase) {
   // 1) Remove confirmed-dead OR route
   const deleteModel = db.prepare(`DELETE FROM models WHERE platform = ? AND model_id = ?`);
   const deleteFallback = db.prepare(`
@@ -725,20 +717,20 @@ function migrateModelsV6(db: Database.Database) {
   const removals: Array<[string, string]> = [
     ['openrouter', 'arcee-ai/trinity-large-preview:free'],
   ];
-  const applyRemovals = db.transaction(() => {
+  const applyRemovals = db.transaction(async () => {
     for (const [p, m] of removals) {
-      deleteFallback.run(p, m);
-      deleteModel.run(p, m);
+      (await deleteFallback.run(p, m));
+      (await deleteModel.run(p, m));
     }
   });
   applyRemovals();
 
   // 2) Correct stale Google free-tier RPD numbers
-  db.prepare(`
+  await db.prepare(`
     UPDATE models SET rpd_limit = 20, monthly_token_budget = '~3M'
      WHERE platform = 'google' AND model_id = 'gemini-2.5-flash'
   `).run();
-  db.prepare(`
+  await db.prepare(`
     UPDATE models SET rpd_limit = 20, monthly_token_budget = '~3M'
      WHERE platform = 'google' AND model_id = 'gemini-2.5-flash-lite'
   `).run();
@@ -767,17 +759,17 @@ function migrateModelsV6(db: Database.Database) {
     ['openrouter', 'google/gemma-4-31b-it:free',                   'Gemma 4 31B (free)',             19, 9,  'Medium',   20, 200, null, null, '~6M', 262144],
     ['openrouter', 'liquid/lfm-2.5-1.2b-instruct:free',            'Liquid LFM 2.5 1.2B (free)',     30, 10, 'Small',    20, 200, null, null, '~6M', 32768],
   ];
-  const apply = db.transaction(() => {
-    for (const a of additions) insert.run(...a);
-    const missing = db.prepare(`
+  const apply = db.transaction(async () => {
+    for (const a of additions) (await insert.run(...a));
+    const missing = await db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
       WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
-      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const maxPriority = (await db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
       const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
-      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+      for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
   apply();
@@ -792,7 +784,7 @@ function migrateModelsV6(db: Database.Database) {
  *   api.z.ai and open.bigmodel.cn keys.
  * HF and NVIDIA left as-is: HF still serves chat with current key; NVIDIA already disabled.
  */
-function migrateModelsV7(db: Database.Database) {
+function migrateModelsV7(db: PgDatabase) {
   const deleteModel = db.prepare(`DELETE FROM models WHERE platform = ? AND model_id = ?`);
   const deleteFallback = db.prepare(`
     DELETE FROM fallback_config WHERE model_db_id IN (
@@ -802,10 +794,10 @@ function migrateModelsV7(db: Database.Database) {
   const removals: Array<[string, string]> = [
     ['openrouter', 'inclusionai/ling-2.6-flash:free'],
   ];
-  const applyRemovals = db.transaction(() => {
+  const applyRemovals = db.transaction(async () => {
     for (const [p, m] of removals) {
-      deleteFallback.run(p, m);
-      deleteModel.run(p, m);
+      (await deleteFallback.run(p, m));
+      (await deleteModel.run(p, m));
     }
   });
   applyRemovals();
@@ -828,17 +820,17 @@ function migrateModelsV7(db: Database.Database) {
     // Zhipu (Z.ai) — free pool. glm-4.7-flash quotas unpublished; mirror glm-4.5-flash row shape.
     ['zhipu',      'glm-4.7-flash',                                          'GLM-4.7 Flash',                            18, 4,  'Large',    null, null, null, 1000000, '~30M', 131072],
   ];
-  const apply = db.transaction(() => {
-    for (const a of additions) insert.run(...a);
-    const missing = db.prepare(`
+  const apply = db.transaction(async () => {
+    for (const a of additions) (await insert.run(...a));
+    const missing = await db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
       WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
-      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const maxPriority = (await db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
       const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
-      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+      for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
   apply();
@@ -851,7 +843,7 @@ function migrateModelsV7(db: Database.Database) {
  * "Couldn't find valid service tier", so the 200s on these rows confirm free-tier
  * access. Cloudflare's @cf/* models share the 10K Neurons/day free pool.
  */
-function migrateModelsV8(db: Database.Database) {
+function migrateModelsV8(db: PgDatabase) {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -864,17 +856,17 @@ function migrateModelsV8(db: Database.Database) {
     ['cloudflare', '@cf/moonshotai/kimi-k2.6',                  'Kimi K2.6 (CF)',                 2,  11, 'Frontier', null, null, null, null, '~10-20M', 262144],
     ['cloudflare', '@cf/ibm-granite/granite-4.0-h-micro',       'Granite 4.0 H Micro (CF)',       29, 11, 'Small',    null, null, null, null, '~5-10M',  131072],
   ];
-  const apply = db.transaction(() => {
-    for (const a of additions) insert.run(...a);
-    const missing = db.prepare(`
+  const apply = db.transaction(async () => {
+    for (const a of additions) (await insert.run(...a));
+    const missing = await db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
       WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
-      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const maxPriority = (await db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
       const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
-      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+      for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
   apply();
@@ -888,10 +880,10 @@ function migrateModelsV8(db: Database.Database) {
  * zai-glm-4.7 due to high demand. Row kept (not deleted) so it can be
  * re-enabled later without losing fallback_config history.
  */
-function migrateModelsV9(db: Database.Database) {
-  db.prepare(
-    "UPDATE models SET enabled = 0 WHERE platform = 'cerebras' AND model_id = 'zai-glm-4.7'"
-  ).run();
+async function migrateModelsV9(db: PgDatabase) {
+  await db.prepare(
+        "UPDATE models SET enabled = 0 WHERE platform = 'cerebras' AND model_id = 'zai-glm-4.7'"
+      ).run();
 }
 
 /**
@@ -908,7 +900,7 @@ function migrateModelsV9(db: Database.Database) {
  * Quota shape: GPU-time, not tokens. monthly_token_budget reflects rough
  * Free-tier "session" capacity rather than a hard token cap.
  */
-function migrateModelsV10(db: Database.Database) {
+function migrateModelsV10(db: PgDatabase) {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -929,17 +921,17 @@ function migrateModelsV10(db: Database.Database) {
     ['ollama', 'gpt-oss:20b',          'GPT-OSS 20B (Ollama)',         18, 10, 'Medium',   null, null, null, null, '~20-30M', 131072],
     ['ollama', 'gemma4:31b',           'Gemma 4 31B (Ollama)',         22, 10, 'Medium',   null, null, null, null, '~20-30M', 131072],
   ];
-  const apply = db.transaction(() => {
-    for (const a of additions) insert.run(...a);
-    const missing = db.prepare(`
+  const apply = db.transaction(async () => {
+    for (const a of additions) (await insert.run(...a));
+    const missing = await db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
       WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
-      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const maxPriority = (await db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
       const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
-      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+      for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
   apply();
@@ -965,16 +957,16 @@ function migrateModelsV10(db: Database.Database) {
  *    please pay with fiat or send tao". The "free" tier requires a paid
  *    balance, which conflicts with the no-card criterion.
  */
-function migrateModelsV11(db: Database.Database) {
+async function migrateModelsV11(db: PgDatabase) {
   // 1) Rename cerebras qwen3-235b → qwen-3-235b-a22b-instruct-2507 if the
   //    old id still exists on this DB. Safe to re-run because of the WHERE.
-  db.prepare(`
+  await db.prepare(`
     UPDATE models SET model_id = 'qwen-3-235b-a22b-instruct-2507'
      WHERE platform = 'cerebras' AND model_id = 'qwen3-235b'
   `).run();
 
   // 2) Re-enable NVIDIA NIM (still has 1,000+ starter credits free-tier).
-  db.prepare(`
+  await db.prepare(`
     UPDATE models SET enabled = 1, monthly_token_budget = '~3M (1k credits)'
      WHERE platform = 'nvidia' AND model_id = 'meta/llama-3.1-70b-instruct'
   `).run();
@@ -1030,17 +1022,17 @@ function migrateModelsV11(db: Database.Database) {
     ['llm7',         'GLM-4.6V-Flash',                            'GLM-4.6V Flash (LLM7)',         15, 9,  'Large',    100, null, null, null, '~2-3M (100/hr)', 131072],
   ];
 
-  const apply = db.transaction(() => {
-    for (const a of additions) insert.run(...a);
-    const missing = db.prepare(`
+  const apply = db.transaction(async () => {
+    for (const a of additions) (await insert.run(...a));
+    const missing = await db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
       WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
-      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const maxPriority = (await db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
       const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
-      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+      for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
   apply();
@@ -1077,7 +1069,7 @@ function migrateModelsV11(db: Database.Database) {
  *   - nvidia/nemotron-3-super-120b-a12b:free  262144 → 1000000
  *   - qwen/qwen3-coder:free                   262144 → 1048576
  */
-function migrateModelsV12(db: Database.Database) {
+async function migrateModelsV12(db: PgDatabase) {
   const deleteModel = db.prepare(`DELETE FROM models WHERE platform = ? AND model_id = ?`);
   const deleteFallback = db.prepare(`
     DELETE FROM fallback_config WHERE model_db_id IN (
@@ -1088,20 +1080,20 @@ function migrateModelsV12(db: Database.Database) {
     ['openrouter', 'inclusionai/ling-2.6-1t:free'],
     ['openrouter', 'tencent/hy3-preview:free'],
   ];
-  const applyRemovals = db.transaction(() => {
+  const applyRemovals = db.transaction(async () => {
     for (const [p, m] of removals) {
-      deleteFallback.run(p, m);
-      deleteModel.run(p, m);
+      (await deleteFallback.run(p, m));
+      (await deleteModel.run(p, m));
     }
   });
   applyRemovals();
 
   // Context-window upgrades for existing rows.
-  db.prepare(`
+  await db.prepare(`
     UPDATE models SET context_window = 1000000
      WHERE platform = 'openrouter' AND model_id = 'nvidia/nemotron-3-super-120b-a12b:free'
   `).run();
-  db.prepare(`
+  await db.prepare(`
     UPDATE models SET context_window = 1048576
      WHERE platform = 'openrouter' AND model_id = 'qwen/qwen3-coder:free'
   `).run();
@@ -1119,17 +1111,17 @@ function migrateModelsV12(db: Database.Database) {
     ['openrouter', 'openrouter/owl-alpha',                         'Owl Alpha (OR-house)',           5,  9, 'Frontier', 20, 200, null, null, '~6M', 1048576],
     ['openrouter', 'nousresearch/hermes-3-llama-3.1-405b:free',    'Hermes 3 405B (free)',          17,  9, 'Large',    20, 200, null, null, '~6M', 131072],
   ];
-  const apply = db.transaction(() => {
-    for (const a of additions) insert.run(...a);
-    const missing = db.prepare(`
+  const apply = db.transaction(async () => {
+    for (const a of additions) (await insert.run(...a));
+    const missing = await db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
       WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
-      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const maxPriority = (await db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
       const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
-      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+      for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
   apply();
@@ -1211,7 +1203,7 @@ function migrateModelsV12(db: Database.Database) {
  *   - github: gpt-5 family + xai/grok-3 both 400 "unavailable_model" on free
  *     tier — keep gpt-4o (V2 verdict still holds).
  */
-function migrateModelsV13(db: Database.Database) {
+async function migrateModelsV13(db: PgDatabase) {
   // 1) Disables (row kept; can be re-enabled without losing fallback history).
   const disable = db.prepare(`UPDATE models SET enabled = 0 WHERE platform = ? AND model_id = ?`);
   const disables: Array<[string, string]> = [
@@ -1220,7 +1212,7 @@ function migrateModelsV13(db: Database.Database) {
     ['ollama', 'mistral-large-3:675b'],
     ['ollama', 'deepseek-v3.2'],
   ];
-  for (const [p, m] of disables) disable.run(p, m);
+  for (const [p, m] of disables) (await disable.run(p, m));
 
   // 2) Hard removals.
   const deleteModel = db.prepare(`DELETE FROM models WHERE platform = ? AND model_id = ?`);
@@ -1233,17 +1225,17 @@ function migrateModelsV13(db: Database.Database) {
     ['sambanova', 'DeepSeek-V3.1-cb'],
     ['cloudflare', '@cf/moonshotai/kimi-k2.5'],
   ];
-  const applyRemovals = db.transaction(() => {
+  const applyRemovals = db.transaction(async () => {
     for (const [p, m] of removals) {
-      deleteFallback.run(p, m);
-      deleteModel.run(p, m);
+      (await deleteFallback.run(p, m));
+      (await deleteModel.run(p, m));
     }
   });
   applyRemovals();
 
   // 3) Cerebras free-pool limit correction (3 enabled rows; zai-glm-4.7 stays
   //    on its V5-set per-model 10/100 cap since it's gated separately).
-  db.prepare(`
+  await db.prepare(`
     UPDATE models
        SET rpm_limit = 5, rpd_limit = 2400, tpm_limit = 30000, tpd_limit = 1000000
      WHERE platform = 'cerebras'
@@ -1251,22 +1243,22 @@ function migrateModelsV13(db: Database.Database) {
   `).run();
 
   // 4) Groq limit corrections.
-  db.prepare(`UPDATE models SET tpd_limit = 100000 WHERE platform = 'groq' AND model_id = 'llama-3.3-70b-versatile'`).run();
-  db.prepare(`UPDATE models SET tpm_limit = 30000 WHERE platform = 'groq' AND model_id = 'meta-llama/llama-4-scout-17b-16e-instruct'`).run();
-  db.prepare(`
+  await db.prepare(`UPDATE models SET tpd_limit = 100000 WHERE platform = 'groq' AND model_id = 'llama-3.3-70b-versatile'`).run();
+  await db.prepare(`UPDATE models SET tpm_limit = 30000 WHERE platform = 'groq' AND model_id = 'meta-llama/llama-4-scout-17b-16e-instruct'`).run();
+  await db.prepare(`
     UPDATE models SET rpd_limit = 250, tpm_limit = 70000, tpd_limit = NULL
      WHERE platform = 'groq' AND model_id IN ('groq/compound', 'groq/compound-mini')
   `).run();
 
   // 5) Single-row context-window corrections.
-  db.prepare(`UPDATE models SET context_window = 32768 WHERE platform = 'sambanova' AND model_id = 'DeepSeek-V3.2'`).run();
-  db.prepare(`UPDATE models SET context_window = 24000 WHERE platform = 'cloudflare' AND model_id = '@cf/meta/llama-3.3-70b-instruct-fp8-fast'`).run();
+  await db.prepare(`UPDATE models SET context_window = 32768 WHERE platform = 'sambanova' AND model_id = 'DeepSeek-V3.2'`).run();
+  await db.prepare(`UPDATE models SET context_window = 24000 WHERE platform = 'cloudflare' AND model_id = '@cf/meta/llama-3.3-70b-instruct-fp8-fast'`).run();
 
   // 6) Mistral context-window corrections.
-  db.prepare(`UPDATE models SET context_window = 256000 WHERE platform = 'mistral' AND model_id = 'codestral-latest'`).run();
-  db.prepare(`UPDATE models SET context_window = 262144 WHERE platform = 'mistral' AND model_id = 'devstral-latest'`).run();
-  db.prepare(`UPDATE models SET context_window = 131072 WHERE platform = 'mistral' AND model_id = 'magistral-medium-latest'`).run();
-  db.prepare(`UPDATE models SET context_window = 262144 WHERE platform = 'mistral' AND model_id = 'mistral-large-latest'`).run();
+  await db.prepare(`UPDATE models SET context_window = 256000 WHERE platform = 'mistral' AND model_id = 'codestral-latest'`).run();
+  await db.prepare(`UPDATE models SET context_window = 262144 WHERE platform = 'mistral' AND model_id = 'devstral-latest'`).run();
+  await db.prepare(`UPDATE models SET context_window = 131072 WHERE platform = 'mistral' AND model_id = 'magistral-medium-latest'`).run();
+  await db.prepare(`UPDATE models SET context_window = 262144 WHERE platform = 'mistral' AND model_id = 'mistral-large-latest'`).run();
 
   // 7) Additions across providers (chat-probed; tools verified where claimed).
   const insert = db.prepare(`
@@ -1306,17 +1298,17 @@ function migrateModelsV13(db: Database.Database) {
     ['huggingface', 'Qwen/Qwen3-Coder-Next',                'Qwen3-Coder Next (HF)',           3, 9, 'Large',    null, null, null, null, '~1-3M', 262144],
   ];
 
-  const apply = db.transaction(() => {
-    for (const a of additions) insert.run(...a);
-    const missing = db.prepare(`
+  const apply = db.transaction(async () => {
+    for (const a of additions) (await insert.run(...a));
+    const missing = await db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
       WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
-      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const maxPriority = (await db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
       const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
-      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+      for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
   apply();
@@ -1336,8 +1328,8 @@ function migrateModelsV13(db: Database.Database) {
  * Cerebras `gpt-oss-120b` is NOT in the deprecation list and stays enabled
  * as the sole free-tier Cerebras route.
  */
-function migrateModelsV14(db: Database.Database) {
-  db.prepare(`
+async function migrateModelsV14(db: PgDatabase) {
+  await db.prepare(`
     UPDATE models SET enabled = 0
      WHERE platform = 'cerebras'
        AND model_id IN ('qwen-3-235b-a22b-instruct-2507', 'llama3.1-8b')
@@ -1356,13 +1348,13 @@ function migrateModelsV14(db: Database.Database) {
  * as Chutes — so the provider was reverted. This removes any orphaned row from
  * a DB that already ran the original V15. No-op on DBs that never had it.
  */
-function migrateModelsV15(db: Database.Database) {
-  db.prepare(`
+async function migrateModelsV15(db: PgDatabase) {
+  await db.prepare(`
     DELETE FROM fallback_config WHERE model_db_id IN (
       SELECT id FROM models WHERE platform = 'siliconflow'
     )
   `).run();
-  db.prepare(`DELETE FROM models WHERE platform = 'siliconflow'`).run();
+  await db.prepare(`DELETE FROM models WHERE platform = 'siliconflow'`).run();
 }
 
 // Adds the supports_vision column to existing DBs and (re)applies the vision
@@ -1377,26 +1369,26 @@ function migrateModelsV15(db: Database.Database) {
 // Conservative on purpose: with hard-fail routing a false negative is just a
 // clear "no vision model" error, while a false positive routes an image to a
 // model that chokes. Idempotent — safe on fresh seeds and upgrades alike.
-function migrateModelsV16Vision(db: Database.Database) {
-  const columns = db.prepare('PRAGMA table_info(models)').all() as { name: string }[];
+async function migrateModelsV16Vision(db: PgDatabase) {
+  const columns = await db.prepare('PRAGMA table_info(models)').all() as { name: string }[];
   if (!columns.some(col => col.name === 'supports_vision')) {
-    db.prepare('ALTER TABLE models ADD COLUMN supports_vision INTEGER NOT NULL DEFAULT 0').run();
+    await db.prepare('ALTER TABLE models ADD COLUMN supports_vision INTEGER NOT NULL DEFAULT 0').run();
   }
-  const apply = db.transaction(() => {
+  const apply = db.transaction(async () => {
     // Reset first so de-flagged models (e.g. an id that moved to Cloudflare)
     // don't keep a stale flag across re-runs.
-    db.prepare('UPDATE models SET supports_vision = 0').run();
+    await db.prepare('UPDATE models SET supports_vision = 0').run();
     // Every Gemini is multimodal (the 'google' platform is all Gemini).
-    db.prepare("UPDATE models SET supports_vision = 1 WHERE platform = 'google'").run();
+    await db.prepare("UPDATE models SET supports_vision = 1 WHERE platform = 'google'").run();
     // Llama 4 (Scout/Maverick) is natively multimodal — but only where the
     // adapter forwards images (exclude the text-flattening providers).
-    db.prepare(`
+    await db.prepare(`
       UPDATE models SET supports_vision = 1
       WHERE LOWER(model_id) LIKE '%llama-4%'
         AND platform NOT IN ('cloudflare', 'cohere')
     `).run();
     // GitHub's OpenAI vision models.
-    db.prepare(`
+    await db.prepare(`
       UPDATE models SET supports_vision = 1
       WHERE platform = 'github'
         AND (model_id LIKE '%gpt-4o%' OR model_id LIKE '%gpt-4.1%' OR model_id LIKE '%gpt-5%')
@@ -1423,11 +1415,11 @@ function migrateModelsV16Vision(db: Database.Database) {
 // Baidu CoBuddy, Groq Compound, GLM-4.6V Flash, GLM-4.5 Flash, Mistral Small 4,
 // Devstral). intelligence_rank (the within-tier tiebreak, low impact) is left
 // untouched. Idempotent — every statement is an absolute SET, safe to re-run.
-function migrateModelsV17IntelligenceTiers(db: Database.Database) {
-  const apply = db.transaction(() => {
+function migrateModelsV17IntelligenceTiers(db: PgDatabase) {
+  const apply = db.transaction(async () => {
     // Frontier (AA ≥ 45): genuine frontier-class. Promotes Gemini 3.5 Flash (55)
     // and Gemini 3 Flash Preview (46) up from Large.
-    db.prepare(`
+    await db.prepare(`
       UPDATE models SET size_label = 'Frontier' WHERE
            LOWER(model_id) LIKE '%gemini-3.1-pro%'
         OR LOWER(model_id) LIKE '%gemini-3.5-flash%'
@@ -1443,7 +1435,7 @@ function migrateModelsV17IntelligenceTiers(db: Database.Database) {
     // Large (AA 26–44). Demotes Gemini 2.5 Pro (35), Nemotron 3 Super/120B (36),
     // GLM-4.7 (42), DeepSeek V3.1/V3.2 (28/32), Trinity (32) down from Frontier;
     // promotes Gemma 4 31B (39) / 26B (31) and Gemini 3.1 Flash-Lite (34) up.
-    db.prepare(`
+    await db.prepare(`
       UPDATE models SET size_label = 'Large' WHERE
            LOWER(model_id) LIKE '%minimax-m2.5%'
         OR LOWER(model_id) LIKE '%qwen3-next%'
@@ -1467,7 +1459,7 @@ function migrateModelsV17IntelligenceTiers(db: Database.Database) {
     // down from Frontier; Llama 4 Maverick (18), GPT-4o (17), Gemini 2.5 Flash
     // (21), GLM-4.5 Air (23), DeepSeek R1 Distill (17), Command A/R+ down from
     // Large; unifies Llama 4 Scout (14) and Llama 3.3 70B (14) across providers.
-    db.prepare(`
+    await db.prepare(`
       UPDATE models SET size_label = 'Medium' WHERE
            (LOWER(model_id) LIKE '%qwen3-coder%' AND LOWER(model_id) NOT LIKE '%qwen3-coder-next%')
         OR LOWER(model_id) LIKE '%qwen-3-235b%' OR LOWER(model_id) LIKE '%qwen3-235b%'
@@ -1494,7 +1486,7 @@ function migrateModelsV17IntelligenceTiers(db: Database.Database) {
 
     // Small (AA ≤ 12). Demotes Gemma 3 12B (9), Command R 08-2024 (legacy ~7),
     // and Codestral (8) down from Medium.
-    db.prepare(`
+    await db.prepare(`
       UPDATE models SET size_label = 'Small' WHERE
            LOWER(model_id) LIKE '%gemma-3-12b%'
         OR LOWER(model_id) LIKE '%command-r-08-2024%'
@@ -1527,7 +1519,7 @@ function migrateModelsV17IntelligenceTiers(db: Database.Database) {
 // models (NVIDIA logs Nemotron traffic). Conservative shared 20 RPM / 200 RPD,
 // matching the OpenRouter :free pool pattern. Idempotent (INSERT OR IGNORE +
 // fallback_config backfill), safe to re-run.
-function migrateModelsV18OpenCodeZen(db: Database.Database) {
+function migrateModelsV18OpenCodeZen(db: PgDatabase) {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1539,17 +1531,17 @@ function migrateModelsV18OpenCodeZen(db: Database.Database) {
     ['opencode', 'nemotron-3-super-free',  'Nemotron 3 Super Free (OpenCode Zen)',   12, 4, 'Large',    20, 200, null, null, 'promo (trial)', 131072],
   ];
 
-  const apply = db.transaction(() => {
-    for (const a of additions) insert.run(...a);
-    const missing = db.prepare(`
+  const apply = db.transaction(async () => {
+    for (const a of additions) (await insert.run(...a));
+    const missing = await db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
       WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
-      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const maxPriority = (await db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
       const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
-      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+      for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
     }
   });
   apply();
@@ -1564,7 +1556,7 @@ function migrateModelsV18OpenCodeZen(db: Database.Database) {
  * Dec 2025, so rpd/tpm are conservative. Idempotent (INSERT OR IGNORE + fallback
  * backfill), safe to re-run.
  */
-function migrateModelsV19Gemma4(db: Database.Database) {
+function migrateModelsV19Gemma4(db: PgDatabase) {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1574,9 +1566,9 @@ function migrateModelsV19Gemma4(db: Database.Database) {
     ['google', 'gemma-4-26b-a4b-it', 'Gemma 4 26B IT', 20, 4, 'Large', 15, 1000, 250000, null, '~30M', 32768],
   ];
 
-  const apply = db.transaction(() => {
-    for (const a of additions) insert.run(...a);
-    backfillFallback(db);
+  const apply = db.transaction(async () => {
+    for (const a of additions) (await insert.run(...a));
+    (await backfillFallback(db));
   });
   apply();
 }
@@ -1593,7 +1585,7 @@ function migrateModelsV19Gemma4(db: Database.Database) {
  * 'kilo' api_keys sentinel row, added via the keyless Keys-page flow. Idempotent
  * (INSERT OR IGNORE + fallback backfill), safe to re-run.
  */
-function migrateModelsV20KiloFree(db: Database.Database) {
+function migrateModelsV20KiloFree(db: PgDatabase) {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1605,9 +1597,9 @@ function migrateModelsV20KiloFree(db: Database.Database) {
     ['kilo', 'stepfun/step-3.7-flash:free',            'StepFun Step 3.7 Flash (Kilo)', 14, 3, 'Medium', null, null, null, null, 'free · 200/hr per IP',         262144],
   ];
 
-  const apply = db.transaction(() => {
-    for (const a of additions) insert.run(...a);
-    backfillFallback(db);
+  const apply = db.transaction(async () => {
+    for (const a of additions) (await insert.run(...a));
+    (await backfillFallback(db));
   });
   apply();
 }
@@ -1630,7 +1622,7 @@ function migrateModelsV20KiloFree(db: Database.Database) {
  * These ids are re-inserted by their original migrations on each boot, so this
  * later DELETE is what keeps them out. Idempotent, safe to re-run.
  */
-function migrateModelsV21PruneDead(db: Database.Database) {
+function migrateModelsV21PruneDead(db: PgDatabase) {
   const dead: Array<[string, string]> = [
     ['llm7', 'gpt-oss-20b'],
     ['llm7', 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo'],
@@ -1640,19 +1632,19 @@ function migrateModelsV21PruneDead(db: Database.Database) {
     ['openrouter', 'minimax/minimax-m2.5:free'],
     ['openrouter', 'baidu/cobuddy:free'],
   ];
-  const apply = db.transaction(() => {
+  const apply = db.transaction(async () => {
     const getId = db.prepare('SELECT id FROM models WHERE platform = ? AND model_id = ?');
     const delFb = db.prepare('DELETE FROM fallback_config WHERE model_db_id = ?');
     const delModel = db.prepare('DELETE FROM models WHERE id = ?');
     for (const [platform, modelId] of dead) {
-      const row = getId.get(platform, modelId) as { id: number } | undefined;
+      const row = (await getId.get(platform, modelId)) as { id: number } | undefined;
       if (!row) continue;
-      delFb.run(row.id);   // remove the fallback chain entry first (FK)
-      delModel.run(row.id);
+      (await delFb.run(row.id));   // remove the fallback chain entry first (FK)
+      (await delModel.run(row.id));
     }
     // Re-enable Cerebras zai-glm-4.7 (model + its fallback chain entry).
-    db.prepare("UPDATE models SET enabled = 1 WHERE platform = 'cerebras' AND model_id = 'zai-glm-4.7'").run();
-    db.prepare(`
+    await db.prepare("UPDATE models SET enabled = 1 WHERE platform = 'cerebras' AND model_id = 'zai-glm-4.7'").run();
+    await db.prepare(`
       UPDATE fallback_config SET enabled = 1
        WHERE model_db_id = (SELECT id FROM models WHERE platform = 'cerebras' AND model_id = 'zai-glm-4.7')
     `).run();
@@ -1685,15 +1677,15 @@ function migrateModelsV21PruneDead(db: Database.Database) {
 // tail (granite, lfm, stepfun, big-pickle, mimo, owl-alpha, cogito,
 // pollinations). Idempotent — reset-then-set, safe on fresh seeds and
 // upgrades alike.
-function migrateModelsV22Tools(db: Database.Database) {
-  const columns = db.prepare('PRAGMA table_info(models)').all() as { name: string }[];
+async function migrateModelsV22Tools(db: PgDatabase) {
+  const columns = await db.prepare('PRAGMA table_info(models)').all() as { name: string }[];
   if (!columns.some(col => col.name === 'supports_tools')) {
-    db.prepare('ALTER TABLE models ADD COLUMN supports_tools INTEGER NOT NULL DEFAULT 0').run();
+    await db.prepare('ALTER TABLE models ADD COLUMN supports_tools INTEGER NOT NULL DEFAULT 0').run();
   }
-  const apply = db.transaction(() => {
+  const apply = db.transaction(async () => {
     // Reset first so a de-flagged model doesn't keep a stale flag across re-runs.
-    db.prepare('UPDATE models SET supports_tools = 0').run();
-    db.prepare(`
+    await db.prepare('UPDATE models SET supports_tools = 0').run();
+    await db.prepare(`
       UPDATE models SET supports_tools = 1
       WHERE (
            LOWER(model_id) LIKE '%gpt-oss%'        -- groq/OR/cerebras/CF/sambanova/ollama; incl. safeguard (tool-tuned)
@@ -1730,8 +1722,8 @@ function migrateModelsV22Tools(db: Database.Database) {
 // incompatible spaces, so /v1/embeddings only ever fails over WITHIN a family
 // (same model served by another provider), never across families.
 // Every entry was live-verified against the provider on 2026-06-04.
-function migrateEmbeddingsV1(db: Database.Database) {
-  db.exec(`
+async function migrateEmbeddingsV1(db: PgDatabase) {
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS embedding_models (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       family TEXT NOT NULL,
@@ -1749,9 +1741,9 @@ function migrateEmbeddingsV1(db: Database.Database) {
 
   // Tag request rows so embeddings traffic doesn't pollute the chat token
   // budget / headroom math. Existing rows backfill to 'chat' via the default.
-  const columns = db.prepare('PRAGMA table_info(requests)').all() as { name: string }[];
+  const columns = await db.prepare('PRAGMA table_info(requests)').all() as { name: string }[];
   if (!columns.some(col => col.name === 'request_type')) {
-    db.prepare("ALTER TABLE requests ADD COLUMN request_type TEXT NOT NULL DEFAULT 'chat'").run();
+    await db.prepare("ALTER TABLE requests ADD COLUMN request_type TEXT NOT NULL DEFAULT 'chat'").run();
   }
 
   const seed = db.prepare(`
@@ -1776,62 +1768,62 @@ function migrateEmbeddingsV1(db: Database.Database) {
     // disabled by default so embedding traffic can't silently eat chat quota.
     ['embed-v4.0', 'cohere', 'embed-v4.0', 'Cohere Embed v4', 1536, 128000, 1, 0, '1K calls/mo (shared w/ chat)'],
   ];
-  const apply = db.transaction(() => { for (const r of rows) seed.run(...r); });
+  const apply = db.transaction(async () => { for (const r of rows) (await seed.run(...r)); });
   apply();
 
-  const def = db.prepare("SELECT value FROM settings WHERE key = 'embeddings_default_family'").get();
+  const def = await db.prepare("SELECT value FROM settings WHERE key = 'embeddings_default_family'").get();
   if (!def) {
-    db.prepare("INSERT INTO settings (key, value) VALUES ('embeddings_default_family', 'gemini-embedding-001')").run();
+    await db.prepare("INSERT INTO settings (key, value) VALUES ('embeddings_default_family', 'gemini-embedding-001')").run();
   }
 }
 
 /** Append any models not yet in the fallback chain, lowest priority, ordered by
  * intelligence_rank. Shared by the recent model migrations (V18–V20). */
-function backfillFallback(db: Database.Database) {
-  const missing = db.prepare(`
+async function backfillFallback(db: PgDatabase) {
+  const missing = await db.prepare(`
     SELECT m.id FROM models m
     LEFT JOIN fallback_config f ON m.id = f.model_db_id
     WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
   `).all() as { id: number }[];
   if (missing.length > 0) {
-    const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+    const maxPriority = (await db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
     const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
-    for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+    for (let i = 0; i < missing.length; i++) (await addFb.run(missing[i].id, maxPriority + i + 1));
   }
 }
 
-function ensureUnifiedKey(db: Database.Database) {
-  const existing = db.prepare("SELECT value FROM settings WHERE key = 'unified_api_key'").get() as { value: string } | undefined;
+async function ensureUnifiedKey(db: PgDatabase) {
+  const existing = await db.prepare("SELECT value FROM settings WHERE key = 'unified_api_key'").get() as { value: string } | undefined;
   if (!existing) {
     const key = `freellmapi-${crypto.randomBytes(24).toString('hex')}`;
-    db.prepare("INSERT INTO settings (key, value) VALUES ('unified_api_key', ?)").run(key);
+    await db.prepare("INSERT INTO settings (key, value) VALUES ('unified_api_key', ?)").run(key);
     console.log(`\n  Your unified API key: ${key}\n`);
   }
 }
 
-export function getUnifiedApiKey(): string {
+export async function getUnifiedApiKey(): Promise<string> {
   const db = getDb();
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'unified_api_key'").get() as { value: string };
+  const row = await db.prepare("SELECT value FROM settings WHERE key = 'unified_api_key'").get() as { value: string };
   return row.value;
 }
 
-export function regenerateUnifiedKey(): string {
+export async function regenerateUnifiedKey(): Promise<string> {
   const db = getDb();
   const key = `freellmapi-${crypto.randomBytes(24).toString('hex')}`;
-  db.prepare("UPDATE settings SET value = ? WHERE key = 'unified_api_key'").run(key);
+  await db.prepare("UPDATE settings SET value = ? WHERE key = 'unified_api_key'").run(key);
   return key;
 }
 
 // Generic key/value settings accessors (used by routing strategy, etc.).
-export function getSetting(key: string): string | undefined {
+export async function getSetting(key: string): Promise<string | undefined> {
   const db = getDb();
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+  const row = await db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
   return row?.value;
 }
 
-export function setSetting(key: string, value: string): void {
+export async function setSetting(key: string, value: string): Promise<void> {
   const db = getDb();
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO settings (key, value) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(key, value);

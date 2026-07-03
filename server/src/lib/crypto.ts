@@ -1,6 +1,5 @@
 import crypto from 'crypto';
-import Database from 'better-sqlite3';
-
+import type { PgDatabase as Database } from '../db/pg-wrapper.js';
 const ALGORITHM = 'aes-256-gcm';
 
 let cachedKey: Buffer | null = null;
@@ -49,7 +48,7 @@ function missingKeyError(): Error {
  * Initialize encryption key from env or an explicit local-dev fallback.
  * Must be called after DB is initialized.
  */
-export function initEncryptionKey(db: Database.Database): void {
+export async function initEncryptionKey(db: Database): Promise<void> {
   // 1. Check env var
   const envKey = process.env.ENCRYPTION_KEY;
   if (envKey && envKey !== PLACEHOLDER_KEY) {
@@ -62,7 +61,7 @@ export function initEncryptionKey(db: Database.Database): void {
   }
 
   // 2. Check DB for persisted key
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'encryption_key'").get() as { value: string } | undefined;
+  const row = await db.prepare("SELECT value FROM settings WHERE key = 'encryption_key'").get() as { value: string } | undefined;
   if (row) {
     cachedKey = parseHexKey(row.value, 'db');
     console.warn('[crypto] No ENCRYPTION_KEY set — using auto-generated key from the local DB (dev only).');
@@ -71,7 +70,7 @@ export function initEncryptionKey(db: Database.Database): void {
 
   // 3. Generate and persist
   cachedKey = crypto.randomBytes(KEY_BYTES);
-  db.prepare("INSERT INTO settings (key, value) VALUES ('encryption_key', ?)").run(cachedKey.toString('hex'));
+  await db.prepare("INSERT INTO settings (key, value) VALUES ('encryption_key', ?)").run(cachedKey.toString('hex'));
   console.warn('[crypto] No ENCRYPTION_KEY set — generated and persisted a local dev key. Set ENCRYPTION_KEY for production.');
 }
 

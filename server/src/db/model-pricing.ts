@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type { PgDatabase as Database } from './pg-wrapper.js';
 
 /**
  * Paid-equivalent pricing per model: what the SAME model (or its nearest
@@ -186,22 +186,22 @@ export const FALLBACK_OUTPUT_PER_M = 0.80;
  * known model. Runs on every boot — it's ~100 UPDATEs in one transaction
  * and keeps prices current when this map is updated in a release.
  */
-export function applyModelPricing(db: Database.Database): void {
-  const columns = db.prepare('PRAGMA table_info(models)').all() as { name: string }[];
+export async function applyModelPricing(db: Database): Promise<void> {
+  const columns = await db.prepare('PRAGMA table_info(models)').all() as { name: string }[];
   if (!columns.some(c => c.name === 'paid_input_per_m')) {
-    db.prepare('ALTER TABLE models ADD COLUMN paid_input_per_m REAL').run();
+    await db.prepare('ALTER TABLE models ADD COLUMN paid_input_per_m REAL').run();
   }
   if (!columns.some(c => c.name === 'paid_output_per_m')) {
-    db.prepare('ALTER TABLE models ADD COLUMN paid_output_per_m REAL').run();
+    await db.prepare('ALTER TABLE models ADD COLUMN paid_output_per_m REAL').run();
   }
 
   const update = db.prepare(`
     UPDATE models SET paid_input_per_m = ?, paid_output_per_m = ?
     WHERE platform = ? AND model_id = ?
   `);
-  const applyAll = db.transaction(() => {
+  const applyAll = db.transaction(async () => {
     for (const [platform, modelId, input, output] of MODEL_PRICING) {
-      update.run(input, output, platform, modelId);
+      (await update.run(input, output, platform, modelId));
     }
   });
   applyAll();
