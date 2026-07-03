@@ -43,6 +43,12 @@ function translateSql(raw: string): string {
     sql = sql.trimEnd().replace(/;?\s*$/, ' ON CONFLICT DO NOTHING');
   }
 
+  // Handle SQLite datetime and julianday for Postgres runtime queries
+  sql = sql.replace(/datetime\('now',\s*'start of month'\)/gi, "date_trunc('month', CURRENT_DATE)::TEXT");
+  sql = sql.replace(/datetime\('now',\s*'start of day'\)/gi, "date_trunc('day', CURRENT_DATE)::TEXT");
+  sql = sql.replace(/datetime\('now'\)/gi, "NOW()::TEXT");
+  sql = sql.replace(/CAST\(\(julianday\('now'\)\s*-\s*julianday\(created_at\)\)\s*AS\s*INTEGER\)/gi, "CAST(EXTRACT(DAY FROM NOW() - created_at::TIMESTAMP) AS INTEGER)");
+
   // Convert ? → $N
   sql = convertParams(sql);
 
