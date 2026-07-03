@@ -1769,11 +1769,11 @@ async function migrateEmbeddingsV1(db: PgDatabase) {
     ['embed-v4.0', 'cohere', 'embed-v4.0', 'Cohere Embed v4', 1536, 128000, 1, 0, '1K calls/mo (shared w/ chat)'],
   ];
   const apply = db.transaction(async () => { for (const r of rows) (await seed.run(...r)); });
-  apply();
+  await apply();
 
-  const def = await db.prepare("SELECT value FROM settings WHERE key = 'embeddings_default_family'").get();
+  const def = await db.prepare("SELECT value FROM app_settings WHERE key = 'embeddings_default_family'").get();
   if (!def) {
-    await db.prepare("INSERT INTO settings (key, value) VALUES ('embeddings_default_family', 'gemini-embedding-001')").run();
+    await db.prepare("INSERT INTO app_settings (key, value) VALUES ('embeddings_default_family', 'gemini-embedding-001')").run();
   }
 }
 
@@ -1793,10 +1793,10 @@ async function backfillFallback(db: PgDatabase) {
 }
 
 async function ensureUnifiedKey(db: PgDatabase) {
-  const existing = await db.prepare("SELECT value FROM settings WHERE key = 'unified_api_key'").get() as { value: string } | undefined;
+  const existing = await db.prepare("SELECT value FROM app_settings WHERE key = 'unified_api_key'").get() as { value: string } | undefined;
   if (!existing) {
     const key = `freellmapi-${crypto.randomBytes(24).toString('hex')}`;
-    await db.prepare("INSERT INTO settings (key, value) VALUES ('unified_api_key', ?)").run(key);
+    await db.prepare("INSERT INTO app_settings (key, value) VALUES ('unified_api_key', ?)").run(key);
     console.log(`\n  Your unified API key: ${key}\n`);
   }
 }
