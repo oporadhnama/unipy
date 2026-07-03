@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: freellmapi-server
+    env: node
+    buildCommand: cd server && npm install && npm run build
+    startCommand: cd server && npm start
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: freellmapi-db
+          property: connectionString
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: PORT
+        value: 3001
+      - key: ADMIN_PASSWORD
+        value: changeme # IMPORTANT: Change this in the Render dashboard!
+
+  - type: web
+    name: freellmapi-dashboard
+    env: static
+    buildCommand: cd dashboard && npm install && npm run build
+    staticPublishPath: ./dashboard/dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://freellmapi-server.onrender.com # Change this if server name changes
+
+databases:
+  - name: freellmapi-db
+    databaseName: freellmapi
+    user: freellmapi_user
