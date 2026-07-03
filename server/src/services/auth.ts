@@ -22,8 +22,8 @@ function normalizeEmail(email: string): string {
 }
 
 export async function userCount(): Promise<number> {
-  const row = await getDb().prepare('SELECT COUNT(*) AS c FROM users').get() as { c: number };
-  return row.c;
+  const row = await getDb().prepare('SELECT COUNT(*) AS c FROM users').get() as { c: number | string };
+  return Number(row.c);
 }
 
 /** Create a user. Throws { code: 'email_taken' } if the email already exists. */
